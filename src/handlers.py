@@ -2,12 +2,14 @@ import asyncio
 import logging
 import os
 import re
+from io import BytesIO
 from types import SimpleNamespace
 from html import escape
 from datetime import datetime, timezone
 
 from src.tts_engine import generate_speech
 from src.pdf_converter import pdf_converter
+from src.ai_solver import solve_homework
 
 from aiogram import Router, F, Bot
 from aiogram.types import (
@@ -63,6 +65,9 @@ class PdfState(StatesGroup):
     waiting_for_pdf = State()
     waiting_for_format = State()
     waiting_for_pages = State()
+
+class HomeworkState(StatesGroup):
+    waiting_for_homework = State()
 
 
 # ─────────────────────────────────────────────
@@ -151,6 +156,10 @@ def friendly_download_error(url: str, err: str) -> str:
 # ─────────────────────────────────────────────
 
 def feature_menu_keyboard() -> InlineKeyboardMarkup:
+    return get_main_menu_keyboard()
+
+
+def get_main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -165,6 +174,12 @@ def feature_menu_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text="ℹ️ ព័ត៌មាន & របៀបប្រើប្រាស់",
                     callback_data="feat_general_info",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📚 ស្វ័យសិក្សា",
+                    callback_data="btn_self_study",
                 ),
             ],
         ]
@@ -452,6 +467,141 @@ async def feature_menu_callback(callback: CallbackQuery, state: FSMContext):
         )
     except Exception:
         pass
+
+
+@router.callback_query(F.data == "btn_self_study")
+async def self_study_menu_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.clear()
+    await safe_edit_text(
+        callback.message,
+        "📚 <b>ស្វ័យសិក្សា</b>\n\n"
+        "សូមជ្រើសរើសមុខងារដែលអ្នកចង់ប្រើ៖",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="📝 AI ដោះស្រាយលំហាត់",
+                    callback_data="btn_ai_homework",
+                )],
+                [InlineKeyboardButton(
+                    text="🔙 ថយក្រោយ",
+                    callback_data="btn_back_home",
+                )],
+            ]
+        ),
+    )
+
+
+@router.callback_query(F.data == "btn_ai_homework")
+async def ai_homework_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.clear()
+    await state.update_data(current_action="awaiting_homework")
+    await state.set_state(HomeworkState.waiting_for_homework)
+    await safe_edit_text(
+        callback.message,
+        "📝 <b>AI ដោះស្រាយលំហាត់</b>\n\n"
+        "សូមផ្ញើសំណួរ ឬរូបថតលំហាត់មកខ្ញុំ។\n"
+        "ខ្ញុំនឹងពន្យល់ដំណោះស្រាយជាជំហានៗជាភាសាខ្មែរ។",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(
+                text="🔙 ថយក្រោយ",
+                callback_data="btn_back_home",
+            )]]
+        ),
+    )
+
+
+@router.callback_query(F.data == "btn_back_home")
+async def back_home_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.clear()
+    welcome = (
+        f"👋 *សួស្តី {escape_markdown_v2(callback.from_user.full_name)}\\!*\n\n"
+        "⚙️ *សូមជ្រើសរើសមុខងារនៅខាងក្រោម៖*\n"
+        "ជ្រើសរើសមុខងារមួយ ដើម្បីចាប់ផ្តើម។"
+    )
+    await safe_edit_text(
+        callback.message,
+        welcome,
+        parse_mode="MarkdownV2",
+        reply_markup=get_main_menu_keyboard(),
+    )
+
+
+async def send_homework_solution(
+    message: Message,
+    state: FSMContext,
+    question: str = "",
+    image_bytes: bytes | None = None,
+    mime_type: str = "image/jpeg",
+) -> None:
+    data = await state.get_data()
+    if data.get("current_action") != "awaiting_homework":
+        return
+
+    progress_message = await message.answer(
+        "⏳ <b>កំពុងវិភាគលំហាត់...</b> សូមរង់ចាំបន្តិច។",
+        parse_mode="HTML",
+    )
+    try:
+        solution = await solve_homework(
+            question=question,
+            image_bytes=image_bytes,
+            mime_type=mime_type,
+        )
+        try:
+            await progress_message.edit_text(solution, parse_mode="Markdown")
+        except TelegramBadRequest:
+            await progress_message.edit_text(solution)
+    except Exception as e:
+        logger.error(f"Homework solver error: {e}", exc_info=True)
+        await safe_edit_text(
+            progress_message,
+            "❌ មិនអាចដោះស្រាយលំហាត់បានទេនៅពេលនេះ។ "
+            "សូមពិនិត្យសំណួរ ហើយព្យាយាមម្តងទៀត។",
+            parse_mode="HTML",
+        )
+    finally:
+        await state.clear()
+
+
+@router.message(HomeworkState.waiting_for_homework, F.text)
+async def handle_homework_text(message: Message, state: FSMContext):
+    await send_homework_solution(message, state, question=message.text or "")
+
+
+@router.message(HomeworkState.waiting_for_homework, F.photo)
+async def handle_homework_photo(message: Message, state: FSMContext):
+    photo = message.photo[-1]
+    try:
+        file = await message.bot.get_file(photo.file_id)
+        image_buffer = BytesIO()
+        await message.bot.download_file(file.file_path, image_buffer)
+        await send_homework_solution(
+            message,
+            state,
+            question=message.caption or "សូមអាន និងដោះស្រាយលំហាត់ក្នុងរូបនេះ។",
+            image_bytes=image_buffer.getvalue(),
+            mime_type="image/jpeg",
+        )
+    except Exception as e:
+        logger.error(f"Homework image download error: {e}", exc_info=True)
+        await message.answer(
+            "❌ មិនអាចអានរូបថតបានទេ។ សូមផ្ញើរូបភាពម្តងទៀត។",
+            parse_mode="HTML",
+        )
+        await state.clear()
+
+
+@router.message(HomeworkState.waiting_for_homework)
+async def handle_homework_invalid_input(message: Message):
+    await message.answer(
+        "⚠️ សូមផ្ញើសំណួរជាអត្ថបទ ឬផ្ញើរូបថតលំហាត់។",
+        parse_mode="HTML",
+    )
 
 
 # ─────────────────────────────────────────────

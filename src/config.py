@@ -7,6 +7,8 @@ load_dotenv()
 # ====== Load Environment Variables ======
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SUPABASE_URI = os.getenv("SUPABASE_URI")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 ADMIN_ID = os.getenv("ADMIN_ID")
 LOG_CHANNEL_ID = os.getenv("LOG_CHANNEL_ID")
 REPORT_CHANNEL_ID_STR = os.getenv("REPORT_CHANNEL_ID", "-1003569125986")
