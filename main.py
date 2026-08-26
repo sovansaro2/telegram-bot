@@ -9,6 +9,7 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, BotCommandScopeChat
 
 from src.config import BOT_TOKEN, PORT, ADMIN_ID, RATE_LIMIT_REQUESTS, RATE_LIMIT_WINDOW
@@ -167,7 +168,7 @@ async def main() -> None:
         logger.warning(f"Could not register admin command menu: {e}")
     
     # Initialize dispatcher
-    _dp = Dispatcher()
+    _dp = Dispatcher(storage=MemoryStorage())
     _dp.message.middleware(RateLimitMiddleware(limit=RATE_LIMIT_REQUESTS, window=RATE_LIMIT_WINDOW))
     _dp.include_router(router)
     

@@ -928,6 +928,15 @@ async def handle_link(message: Message, state: FSMContext):
     user_id = message.from_user.id
     await db.get_user(user_id)  
 
+    current_state = await state.get_state()
+    if current_state != DownloadState.waiting_for_url.state:
+        await message.answer(
+            "សូមជ្រើសរើសជម្រើស <b>ទាញយកវីដេអូ</b> ពីម៉ឺនុយជាមុនសិន "
+            "បន្ទាប់មកផ្ញើ Link វីដេអូរបស់អ្នក។",
+            parse_mode="HTML",
+        )
+        return
+
     raw_url = message.text.strip()
     try:
         url, _platform = validate_and_normalize_url(raw_url)
@@ -938,7 +947,6 @@ async def handle_link(message: Message, state: FSMContext):
         )
         return
 
-    current_state = await state.get_state()
     stored_data = await state.get_data()
     selected_type = stored_data.get("download_type")
 
