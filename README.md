@@ -54,7 +54,7 @@ Copy `.env.example` to `.env` and fill in the values (or set them in your hostin
 | `ADMIN_ID` | ✅ | Your Telegram user ID (numeric); enables `/stats` and `/broadcast` |
 | `REPORT_CHANNEL_ID` | ✅ | Telegram channel ID that receives `/report` messages |
 | `GEMINI_API_KEY` | Optional | Google Gemini API key for the AI Homework Solver |
-| `GEMINI_MODEL` | Optional | Gemini model name (default: `gemini-2.5-flash`) |
+| `GEMINI_MODEL` | Optional | Gemini model name (default: `gemini-3.6-flash`) |
 | `SUPABASE_URI` | Optional | Supabase PostgreSQL connection string. If omitted, runs with an in-memory store (resets on restart) |
 | `LOG_CHANNEL_ID` | Optional | Telegram channel ID for join/leave/error logging |
 | `COOKIES_FILE` | Optional | Path to a `cookies.txt` file for age-restricted / login-required YouTube & Facebook |

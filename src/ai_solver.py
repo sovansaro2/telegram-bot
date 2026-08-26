@@ -2,11 +2,16 @@ import logging
 from typing import Optional
 
 from google import genai
+from google.genai.errors import APIError
 from google.genai import types
 
 from src.config import GEMINI_API_KEY, GEMINI_MODEL
 
 logger = logging.getLogger(__name__)
+
+
+class HomeworkSolverError(RuntimeError):
+    """Safe, user-facing failure raised when Gemini cannot solve homework."""
 
 SYSTEM_PROMPT = (
     "អ្នកជាគ្រូបង្រៀនខ្មែរដែលមានបទពិសោធន៍ សម្រាប់សិស្សវិទ្យាល័យកម្ពុជា ថ្នាក់ទី ១០ ដល់ ១២។ "
@@ -35,8 +40,9 @@ async def solve_homework(
     if not contents:
         raise ValueError("Homework input is empty")
 
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    client = None
     try:
+        client = genai.Client(api_key=GEMINI_API_KEY)
         response = await client.aio.models.generate_content(
             model=GEMINI_MODEL,
             contents=contents,
@@ -44,7 +50,21 @@ async def solve_homework(
         )
         answer = (response.text or "").strip()
         if not answer:
-            raise RuntimeError("Gemini returned an empty response")
+            raise HomeworkSolverError("Gemini returned an empty response")
         return answer
+    except APIError as e:
+        logger.warning("Gemini API request failed: %s", e)
+        raise HomeworkSolverError(
+            "The homework service is temporarily unavailable"
+        ) from e
+    except HomeworkSolverError:
+        raise
+    except Exception as e:
+        logger.error("Unexpected Gemini solver error: %s", e, exc_info=True)
+        raise HomeworkSolverError("The homework service could not process the request") from e
     finally:
-        await client.aio.aclose()
+        if client is not None:
+            try:
+                await client.aio.aclose()
+            except Exception as e:
+                logger.warning("Could not close Gemini client cleanly: %s", e)

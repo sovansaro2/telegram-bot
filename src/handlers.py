@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 from src.tts_engine import generate_speech
 from src.pdf_converter import pdf_converter
-from src.ai_solver import solve_homework
+from src.ai_solver import HomeworkSolverError, solve_homework
 
 from aiogram import Router, F, Bot
 from aiogram.types import (
@@ -556,6 +556,13 @@ async def send_homework_solution(
             await progress_message.edit_text(solution, parse_mode="Markdown")
         except TelegramBadRequest:
             await progress_message.edit_text(solution)
+    except HomeworkSolverError:
+        await safe_edit_text(
+            progress_message,
+            "❌ សេវា AI មិនអាចដោះស្រាយលំហាត់បាននៅពេលនេះទេ។ "
+            "សូមព្យាយាមម្តងទៀតនៅពេលក្រោយ។",
+            parse_mode="HTML",
+        )
     except Exception as e:
         logger.error(f"Homework solver error: {e}", exc_info=True)
         await safe_edit_text(
