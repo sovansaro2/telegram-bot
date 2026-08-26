@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 from types import SimpleNamespace
 from html import escape
 from datetime import datetime, timezone
@@ -67,6 +68,9 @@ class PdfState(StatesGroup):
 # ─────────────────────────────────────────────
 # Helper: Friendly Error Messages
 # ─────────────────────────────────────────────
+
+def escape_markdown_v2(text: str) -> str:
+    return re.sub(r"([_\*\[\]\(\)~`>#+\-=|{}.!\\])", r"\\\1", text or "")
 
 def friendly_download_error(url: str, err: str) -> str:
     u = (url or "").lower()
@@ -149,11 +153,20 @@ def friendly_download_error(url: str, err: str) -> str:
 def feature_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="📥 ទាញយកវីដេអូ", callback_data="feat_formats")],
-            [InlineKeyboardButton(text="🎵 បំលែង Video ទៅ MP3", callback_data="feat_convert")],
-            [InlineKeyboardButton(text="🗣 អានអត្ថបទ", callback_data="feat_tts")],
-            [InlineKeyboardButton(text="🖼 បំលែង PDF ទៅរូបភាព", callback_data="feat_pdf")],
-            [InlineKeyboardButton(text="ℹ ព័ត៌មានទូទៅ", callback_data="feat_general_info")],
+            [
+                InlineKeyboardButton(text="🎬 ទាញយកវីដេអូ", callback_data="feat_formats"),
+                InlineKeyboardButton(text="🎵 បម្លែងជា MP3", callback_data="feat_convert"),
+            ],
+            [
+                InlineKeyboardButton(text="🗣️ អានអត្ថបទ", callback_data="feat_tts"),
+                InlineKeyboardButton(text="📄 PDF ទៅរូបភាព", callback_data="feat_pdf"),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="ℹ️ ព័ត៌មាន & របៀបប្រើប្រាស់",
+                    callback_data="feat_general_info",
+                ),
+            ],
         ]
     )
 
@@ -319,11 +332,12 @@ async def cmd_start(message: Message, state: FSMContext):
         )
 
     welcome = (
-        f"👋 <b>សួស្តី {escape(message.from_user.full_name)}!</b>\n\n"
-        "⚙️ <b>សូមជ្រើសរើសមុខងារនៅខាងក្រោម៖</b>"
+        f"👋 *សួស្តី {escape_markdown_v2(message.from_user.full_name)}\\!*\n\n"
+        "⚙️ *សូមជ្រើសរើសមុខងារនៅខាងក្រោម៖*\n"
+        "ជ្រើសរើសមុខងារមួយ ដើម្បីចាប់ផ្តើម។"
     )
     await message.answer(
-        welcome, parse_mode="HTML", reply_markup=feature_menu_keyboard()
+        welcome, parse_mode="MarkdownV2", reply_markup=feature_menu_keyboard()
     )
 
 
@@ -395,12 +409,13 @@ async def feature_menu_callback(callback: CallbackQuery, state: FSMContext):
     if callback.data == "feat_back":
         await state.clear()
         welcome = (
-            f"👋 <b>សួស្តី {escape(callback.from_user.full_name)}!</b>\n\n"
-            "⚙️ <b>សូមជ្រើសរើសមុខងារនៅខាងក្រោម៖</b>"
+            f"👋 *សួស្តី {escape_markdown_v2(callback.from_user.full_name)}\\!*\n\n"
+            "⚙️ *សូមជ្រើសរើសមុខងារនៅខាងក្រោម៖*\n"
+            "ជ្រើសរើសមុខងារមួយ ដើម្បីចាប់ផ្តើម។"
         )
         try:
             await callback.message.edit_text(
-                welcome, parse_mode="HTML", reply_markup=feature_menu_keyboard()
+                welcome, parse_mode="MarkdownV2", reply_markup=feature_menu_keyboard()
             )
         except Exception:
             pass
