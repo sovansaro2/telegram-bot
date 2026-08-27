@@ -1,4 +1,4 @@
-aiogram==3.4.1
+aiogram>=3.13.0
 # Pin to a recent nightly/dev build to keep up with frequent YouTube changes
 yt-dlp[default]==2026.1.25.233128.dev0
 asyncpg==0.30.0
@@ -8,3 +8,4 @@ gTTS==2.5.1
 edge-tts
 google-genai>=0.1.1
 PyMuPDF==1.24.10
+pillow>=10.0.0
