@@ -1,12 +1,14 @@
 import asyncio
 import logging
 import urllib.parse
+from io import BytesIO
 from typing import Optional
 
 import aiohttp
 from google import genai
 from google.genai.errors import APIError, ServerError
 from google.genai import types
+from PIL import Image
 
 from src.config import GEMINI_API_KEY
 
@@ -57,22 +59,22 @@ SYSTEM_PROMPT = (
 
 async def render_latex_to_image(latex_str: str) -> bytes | None:
     """Render a LaTeX formula block with CodeCogs into a Telegram-ready PNG."""
-    latex_code = latex_str.strip()
-    if not latex_code:
-        return None
-
-    url = (
-        f"{CODECOGS_LATEX_URL}?\\dpi{{300}}\\bg{{18181b}}\\color{{white}} "
-        f"{urllib.parse.quote(latex_code)}"
-    )
-    timeout = aiohttp.ClientTimeout(total=30)
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36"
-        )
-    }
     try:
+        latex_code = latex_str.strip()
+        if not latex_code:
+            return None
+
+        url = (
+            f"{CODECOGS_LATEX_URL}?\\dpi{{300}}\\bg{{18181b}}\\color{{white}} "
+            f"{urllib.parse.quote(latex_code)}"
+        )
+        timeout = aiohttp.ClientTimeout(total=30)
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36"
+            )
+        }
         async with aiohttp.ClientSession(
             timeout=timeout,
             headers=headers,
@@ -110,7 +112,23 @@ async def solve_homework(
     if question.strip():
         contents.append(question.strip())
     if image_bytes:
-        contents.append(types.Part.from_bytes(data=image_bytes, mime_type=mime_type))
+        try:
+            with Image.open(BytesIO(image_bytes)) as image:
+                image.load()
+                normalized_image = BytesIO()
+                image.convert("RGB").save(normalized_image, format="JPEG")
+            contents.append(
+                types.Part.from_bytes(
+                    data=normalized_image.getvalue(),
+                    mime_type="image/jpeg",
+                )
+            )
+        except Exception as e:
+            logger.warning("Invalid homework image: %s", e)
+            raise HomeworkSolverError(
+                "Homework image could not be decoded",
+                "❌ មិនអាចអានរូបថតលំហាត់បានទេ។ សូមផ្ញើរូបភាពដែលច្បាស់ និងត្រឹមត្រូវ។",
+            ) from e
     if not contents:
         raise ValueError("Homework input is empty")
 

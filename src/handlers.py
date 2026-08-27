@@ -558,7 +558,7 @@ async def send_homework_solution(
         )
         await progress_message.delete()
         if image_bytes:
-            await message.reply_photo(
+            await message.answer_photo(
                 photo=BufferedInputFile(image_bytes, filename="solution.png")
             )
         await message.answer(text_explanation)
