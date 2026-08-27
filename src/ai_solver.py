@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Optional
 
@@ -42,7 +43,7 @@ SYSTEM_PROMPT = (
     "សម្រាប់លីមីត ប្រើ → ដូចជា lim (x → +∞) ហើយប្រើ ∞ សម្រាប់អនន្ត។ សម្រាប់គុណ ប្រើ × និងសម្រាប់មិនស្មើ ប្រើ ≠។ "
     "សម្រាប់ស្វ័យគុណ ប្រើលេខលើ Unicode ដូចជា x² និង x³។ "
     "បើសំណួរមិនច្បាស់ សូមបង្ហាញចំណុចដែលមិនច្បាស់នៅក្នុងជំហានដោះស្រាយ ហើយកុំប្រឌិតទិន្នន័យ។ "
-    "ត្រូវបែងចែកចម្លើយជាពីរផ្នែក ដោយប្រើបន្ទាត់ ===SEPARATOR=== តែមួយគត់។ "
+    "ត្រូវបែងចែកចម្លើយជាពីរផ្នែក ដោយប្រើបន្ទាត់ ===LATEX_BLOCK=== តែមួយគត់។ "
     "ផ្នែកទី១ មុនសញ្ញាបែងចែក ត្រូវមានតែប្លុករូបមន្តគណិតវិទ្យា LaTeX ពេញលេញ និងមានជំហានជាច្រើន "
     "ដែលអាចយកទៅ Render ជារូបភាពបាន។ កុំដាក់អត្ថបទពន្យល់ក្នុងផ្នែកទី១។ "
     "ផ្នែកទី២ ក្រោយសញ្ញាបែងចែក ត្រូវមានការពន្យល់ជាភាសាខ្មែរ ជាជំហានៗ ហើយត្រូវចាប់ផ្តើមដោយ "
@@ -51,11 +52,11 @@ SYSTEM_PROMPT = (
 )
 
 
-async def render_latex_to_image(latex_str: str) -> bytes:
+async def render_latex_to_image(latex_str: str) -> bytes | None:
     """Render a LaTeX formula block into a Telegram-ready PNG."""
     formula = latex_str.strip()
     if not formula:
-        raise ValueError("LaTeX formula is empty")
+        return None
 
     timeout = aiohttp.ClientTimeout(total=30)
     params = {
@@ -64,22 +65,31 @@ async def render_latex_to_image(latex_str: str) -> bytes:
         "backgroundColor": "18181b",
         "density": "300",
     }
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(QUICKCHART_LATEX_URL, params=params) as response:
-            if response.status != 200:
-                raise RuntimeError(f"QuickChart returned HTTP {response.status}")
-            image_bytes = await response.read()
-            if not image_bytes:
-                raise RuntimeError("QuickChart returned an empty image")
-            return image_bytes
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(QUICKCHART_LATEX_URL, params=params) as response:
+                if response.status != 200:
+                    logger.warning("QuickChart returned HTTP %s", response.status)
+                    return None
+                image_bytes = await response.read()
+                if not image_bytes:
+                    logger.warning("QuickChart returned an empty image")
+                    return None
+                return image_bytes
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        logger.warning("QuickChart LaTeX rendering failed: %s", e)
+        return None
+    except Exception as e:
+        logger.error("Unexpected QuickChart rendering error: %s", e, exc_info=True)
+        return None
 
 
 async def solve_homework(
     question: str = "",
     image_bytes: Optional[bytes] = None,
     mime_type: str = "image/jpeg",
-) -> str:
-    """Ask Gemini to solve text or image-based high-school homework."""
+) -> tuple[bytes | None, str]:
+    """Ask Gemini and return an optional formula image with Khmer explanation."""
     if not GEMINI_API_KEY:
         raise HomeworkSolverError(
             "GEMINI_API_KEY is not configured",
@@ -108,10 +118,20 @@ async def solve_homework(
                         system_instruction=SYSTEM_PROMPT
                     ),
                 )
-                answer = (response.text or "").strip()
-                if not answer:
+                raw_answer = (response.text or "").strip()
+                if not raw_answer:
                     raise HomeworkSolverError("Gemini returned an empty response")
-                return answer
+                if "===LATEX_BLOCK===" in raw_answer:
+                    latex_code, text_explanation = raw_answer.split(
+                        "===LATEX_BLOCK===", 1
+                    )
+                    latex_code = latex_code.strip()
+                    text_explanation = text_explanation.strip()
+                    if latex_code.startswith("```"):
+                        latex_code = latex_code.split("\n", 1)[-1]
+                        latex_code = latex_code.rsplit("```", 1)[0].strip()
+                    return await render_latex_to_image(latex_code), text_explanation
+                return None, raw_answer
             except ServerError as e:
                 status_code = getattr(e, "status_code", None) or 503
                 if status_code not in (429, 503, 404):

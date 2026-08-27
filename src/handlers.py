@@ -11,7 +11,6 @@ from src.tts_engine import generate_speech
 from src.pdf_converter import pdf_converter
 from src.ai_solver import (
     HomeworkSolverError,
-    render_latex_to_image,
     solve_homework,
 )
 
@@ -551,46 +550,18 @@ async def send_homework_solution(
         "⏳ <b>កំពុងវិភាគលំហាត់...</b> សូមរង់ចាំបន្តិច។",
         parse_mode="HTML",
     )
-    progress_deleted = False
     try:
-        raw_solution = await solve_homework(
+        image_bytes, text_explanation = await solve_homework(
             question=question,
             image_bytes=image_bytes,
             mime_type=mime_type,
         )
-        if "===SEPARATOR===" in raw_solution:
-            latex_part, explanation = raw_solution.split("===SEPARATOR===", 1)
-            latex_part = latex_part.strip()
-            explanation = explanation.strip()
-        else:
-            latex_part = ""
-            explanation = raw_solution.strip()
-
-        if latex_part and explanation:
-            try:
-                if latex_part.startswith("```"):
-                    latex_part = latex_part.split("\n", 1)[-1]
-                    latex_part = latex_part.rsplit("```", 1)[0].strip()
-                image_bytes = await render_latex_to_image(latex_part)
-                await progress_message.delete()
-                progress_deleted = True
-                await message.reply_photo(
-                    photo=BufferedInputFile(image_bytes, filename="solution.png"),
-                    caption="📐 រូបមន្តដោះស្រាយ",
-                )
-            except Exception as e:
-                logger.warning("LaTeX image rendering failed: %s", e)
-
-        if not progress_deleted:
-            try:
-                await progress_message.edit_text(explanation, parse_mode="Markdown")
-            except TelegramBadRequest:
-                await progress_message.edit_text(explanation)
-        else:
-            try:
-                await message.answer(explanation, parse_mode="Markdown")
-            except TelegramBadRequest:
-                await message.answer(explanation)
+        await progress_message.delete()
+        if image_bytes:
+            await message.reply_photo(
+                photo=BufferedInputFile(image_bytes, filename="solution.png")
+            )
+        await message.reply_text(text_explanation)
     except HomeworkSolverError as e:
         await safe_edit_text(
             progress_message,
