@@ -1,10 +1,10 @@
 import asyncio
-import logging
-import os
-import re
 from datetime import datetime, timezone
 from html import escape
 from io import BytesIO
+import logging
+import os
+import re
 from types import SimpleNamespace
 
 from aiogram import Bot, F, Router
@@ -22,6 +22,7 @@ from aiogram.types import (
     InputMediaPhoto,
     Message,
 )
+import fitz
 
 from src.ai_solver import HomeworkSolverError, solve_homework
 from src.config import (
@@ -558,7 +559,7 @@ async def send_homework_solution(
         parse_mode="HTML",
     )
     try:
-        math_img, text_explanation = await solve_homework(
+        math_img, html_explanation = await solve_homework(
             question=question,
             image_bytes=image_bytes,
             mime_type=mime_type,
@@ -570,12 +571,18 @@ async def send_homework_solution(
                 photo=BufferedInputFile(math_img, filename="solution.png")
             )
 
-        # ផ្ញើអត្ថបទពន្យល់ដោយបំបែកជាចំណែកតូចៗប្រសិនបើលើស 4000 តួអក្សរ
-        if len(text_explanation) <= 4000:
-            await message.answer(text_explanation)
-        else:
-            for i in range(0, len(text_explanation), 4000):
-                await message.answer(text_explanation[i:i + 4000])
+        # ផ្ញើអត្ថបទពន្យល់ជាទម្រង់ HTML ដើម្បីចេញប្រអប់ Copy Code ស្អាត
+        try:
+            if len(html_explanation) <= 4000:
+                await message.answer(html_explanation, parse_mode="HTML")
+            else:
+                for i in range(0, len(html_explanation), 4000):
+                    await message.answer(
+                        html_explanation[i : i + 4000], parse_mode="HTML"
+                    )
+        except Exception:
+            # Fallback ផ្ញើជា Plain text បើការ parse HTML មានបញ្ហា
+            await message.answer(html_explanation)
 
         # លុប progress message ក្រោយពេលផ្ញើសម្រេច
         await safe_delete_message(
@@ -781,7 +788,6 @@ async def handle_pdf_document(message: Message, state: FSMContext):
     try:
         await message.bot.download_file(file.file_path, input_path)
 
-        import fitz
         doc = fitz.open(input_path)
         total_pages = doc.page_count
         doc.close()

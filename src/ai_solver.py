@@ -1,7 +1,9 @@
 import asyncio
 import io
 import logging
+import re
 import urllib.parse
+from html import escape
 from io import BytesIO
 from typing import Optional
 
@@ -15,14 +17,14 @@ from src.config import GEMINI_API_KEY
 
 logger = logging.getLogger(__name__)
 
-CODECOGS_LATEX_URL = "https://latex.codecogs.com/png.image"
+CODECOGS_LATEX_URL = "[https://latex.codecogs.com/png.image](https://latex.codecogs.com/png.image)"
 
-# បញ្ជីម៉ូដែលដែលមានស្ថេរភាព និងគាំទ្រ Vision ច្បាស់បំផុត
 FALLBACK_MODELS = [
-    "gemini-3.6-flash",          # ម៉ូដែលថ្មីលឿន (ណែនាំដោយ error message)
-    "gemini-3.1-pro-preview",    # Pro fallback
-    "gemini-flash-latest",       # alias ថេរ មិនងាយ retire
+    "gemini-3.6-flash",
+    "gemini-3.1-pro-preview",
+    "gemini-flash-latest",
 ]
+
 
 class HomeworkSolverError(RuntimeError):
     """Safe, user-facing failure raised when Gemini cannot solve homework."""
@@ -41,22 +43,55 @@ SYSTEM_PROMPT = (
     "កុំសរសេរសួរសុខទុក្ខ ឬសេចក្តីផ្តើមណាមួយឡើយ។ ហាមប្រើពាក្យ សួស្ដី ឬ ជំរាបសួរ។ "
     "ចាប់ផ្តើមចម្លើយភ្លាមៗ ដោយបន្ទាត់ទីមួយត្រូវតែជា៖ 🎯 ចម្លើយ៖ [ចម្លើយចុងក្រោយ]។ "
     "បន្ទាប់មកដាក់បន្ទាត់៖ 📌 នេះជាប្រមាណវិធី៖ ហើយបង្ហាញការគណនា និងការពន្យល់ជាជំហានៗ។ "
-    "រាល់ជំហានគណិតវិទ្យាដែលមានច្រើនបន្ទាត់ ត្រូវដាក់ក្នុង Markdown code block ប្រភេទ text ដោយប្រើ ```text នៅដើម និង ``` នៅចុង ដើម្បីឲ្យអ្នកប្រើអាចចុចចម្លងបានងាយ។ "
-    "នៅចុងបំផុត ត្រូវសរសេរ ✅ ចម្លើយចុងក្រោយ៖ ហើយដាក់ [ចម្លើយចុងក្រោយ] នៅក្នុង Markdown code block ប្រភេទ text ផ្ទាល់ខ្លួនមួយ។ "
+    "រាល់ជំហានគណិតវិទ្យាដែលមានការគណនា ត្រូវដាក់ក្នុង Markdown code block ដោយប្រើ ```text នៅដើម និង ``` នៅចុង។ "
+    "នៅចុងបំផុត ត្រូវសរសេរ ✅ ចម្លើយចុងក្រោយ៖ ហើយដាក់ [ចម្លើយចុងក្រោយ] នៅក្នុង Markdown code block ```text ផ្ទាល់ខ្លួនមួយ។ "
     "កុំដាក់អត្ថបទសួរសុខទុក្ខ ឬសេចក្តីផ្តើមមុនបន្ទាត់ 🎯 និងកុំដាក់អត្ថបទក្រោយ code block ចុងក្រោយ។ "
-    "ហាមប្រើ LaTeX ជាដាច់ខាត រួមទាំង $$, $ និងពាក្យបញ្ជា \\lim, \\frac, \\sqrt, \\to, \\infty ឬទម្រង់ LaTeX ផ្សេងទៀត។ "
-    "ប្រើតែអក្សរធម្មតាដែលអានងាយ និងតួអក្សរគណិតវិទ្យា Unicode ប៉ុណ្ណោះ។ "
-    "សម្រាប់ឫសការេ ប្រើ √ ដូចជា √(4x² + x + 2)។ សម្រាប់ប្រភាគ ប្រើ / ដូចជា 1/x។ "
-    "សម្រាប់លីមីត ប្រើ → ដូចជា lim (x → +∞) ហើយប្រើ ∞ សម្រាប់អនន្ត។ សម្រាប់គុណ ប្រើ × និងសម្រាប់មិនស្មើ ប្រើ ≠។ "
-    "សម្រាប់ស្វ័យគុណ ប្រើលេខលើ Unicode ដូចជា x² និង x³។ "
-    "បើសំណួរមិនច្បាស់ សូមបង្ហាញចំណុចដែលមិនច្បាស់នៅក្នុងជំហានដោះស្រាយ ហើយកុំប្រឌិតទិន្នន័យ។ "
+    "ហាមប្រើ LaTeX ក្នុងផ្នែកពន្យល់ (ផ្នែកទី២)។ ប្រើតែអក្សរធម្មតា និងតួអក្សរគណិតវិទ្យា Unicode (√, →, ∞, ×, ≠, ², ³) ប៉ុណ្ណោះ។ "
     "ត្រូវបែងចែកចម្លើយជាពីរផ្នែក ដោយប្រើបន្ទាត់ ===LATEX_BLOCK=== តែមួយគត់។ "
-    "ផ្នែកទី១ មុនសញ្ញាបែងចែក ត្រូវមានតែប្លុករូបមន្តគណិតវិទ្យា LaTeX ពេញលេញ និងមានជំហានជាច្រើន "
-    "ដែលអាចយកទៅ Render ជារូបភាពបាន។ កុំដាក់អត្ថបទពន្យល់ក្នុងផ្នែកទី១។ "
-    "ផ្នែកទី២ ក្រោយសញ្ញាបែងចែក ត្រូវមានការពន្យល់ជាភាសាខ្មែរ ជាជំហានៗ ហើយត្រូវចាប់ផ្តើមដោយ "
-    "🎯 ចម្លើយ៖ [ចម្លើយចុងក្រោយ] និងបញ្ចប់ដោយ ✅ ចម្លើយចុងក្រោយ៖ [ចម្លើយចុងក្រោយ]។ "
-    "ការហាមប្រើ LaTeX និងការប្រើ Unicode math symbols អនុវត្តចំពោះផ្នែកទី២ប៉ុណ្ណោះ។"
+    "ផ្នែកទី១ មុនសញ្ញាបែងចែក ត្រូវមានតែប្លុករូបមន្តគណិតវិទ្យា LaTeX ពេញលេញសម្រាប់ Render ជារូបភាព។ "
+    "ផ្នែកទី២ ក្រោយសញ្ញាបែងចែក ត្រូវមានការពន្យល់ជាភាសាខ្មែរ ជាជំហានៗ។"
 )
+
+
+def format_explanation_to_html(raw_text: str) -> str:
+    """បម្លែងអត្ថបទ Markdown ទៅជា Telegram HTML ដែលមានប្រអប់ចុច Copy ស្អាត"""
+    if not raw_text:
+        return ""
+
+    pattern = re.compile(r"```(?:[a-zA-Z0-9_-]+)?\n?(.*?)```", re.DOTALL)
+    parts = []
+    last_idx = 0
+
+    for match in pattern.finditer(raw_text):
+        start, end = match.span()
+        non_code = raw_text[last_idx:start]
+        if non_code:
+            escaped_non_code = escape(non_code)
+            escaped_non_code = re.sub(
+                r"(🎯\s*ចម្លើយ៖?[^\n]*)", r"<b>\1</b>", escaped_non_code
+            )
+            escaped_non_code = re.sub(
+                r"(📌\s*នេះជាប្រមាណវិធី៖?)", r"<b>\1</b>", escaped_non_code
+            )
+            escaped_non_code = re.sub(
+                r"(✅\s*ចម្លើយចុងក្រោយ៖?)", r"<b>\1</b>", escaped_non_code
+            )
+            parts.append(escaped_non_code)
+
+        code_content = match.group(1).strip()
+        escaped_code = escape(code_content)
+        parts.append(f"<pre><code>{escaped_code}</code></pre>")
+        last_idx = end
+
+    remaining = raw_text[last_idx:]
+    if remaining:
+        escaped_rem = escape(remaining)
+        escaped_rem = re.sub(r"(🎯\s*ចម្លើយ៖?[^\n]*)", r"<b>\1</b>", escaped_rem)
+        escaped_rem = re.sub(r"(📌\s*នេះជាប្រមាណវិធី៖?)", r"<b>\1</b>", escaped_rem)
+        escaped_rem = re.sub(r"(✅\s*ចម្លើយចុងក្រោយ៖?)", r"<b>\1</b>", escaped_rem)
+        parts.append(escaped_rem)
+
+    return "".join(parts)
 
 
 async def render_latex_to_image(latex_str: str) -> bytes | None:
@@ -103,7 +138,6 @@ async def solve_homework(
 
     contents: list[object] = []
 
-    # ដាក់រូបភាពចូល contents ដោយផ្ទាល់តាមរយៈ PIL Image
     if image_bytes:
         try:
             image = Image.open(BytesIO(image_bytes))
@@ -152,12 +186,13 @@ async def solve_homework(
                         latex_code = latex_code.split("\n", 1)[-1]
                         latex_code = latex_code.rsplit("```", 1)[0].strip()
                     rendered_img = await render_latex_to_image(latex_code)
-                    return rendered_img, text_explanation
+                    formatted_html = format_explanation_to_html(text_explanation)
+                    return rendered_img, formatted_html
 
-                return None, raw_answer
+                formatted_html = format_explanation_to_html(raw_answer)
+                return None, formatted_html
 
             except (ServerError, APIError, Exception) as e:
-                # ស្រង់ status code ដោយសុវត្ថិភាព (e.code ឬ status_code)
                 code = (
                     getattr(e, "code", None)
                     or getattr(e, "status_code", None)
