@@ -561,7 +561,7 @@ async def send_homework_solution(
             await message.reply_photo(
                 photo=BufferedInputFile(image_bytes, filename="solution.png")
             )
-        await message.reply_text(text_explanation)
+        await message.answer(text_explanation)
     except HomeworkSolverError as e:
         await safe_edit_text(
             progress_message,

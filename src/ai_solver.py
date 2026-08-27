@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import urllib.parse
 from typing import Optional
 
 import aiohttp
@@ -10,7 +11,7 @@ from google.genai import types
 from src.config import GEMINI_API_KEY
 
 logger = logging.getLogger(__name__)
-QUICKCHART_LATEX_URL = "https://quickchart.io/latex"
+CODECOGS_LATEX_URL = "https://latex.codecogs.com/png.image"
 FALLBACK_MODELS = [
     "gemini-3.7-flash",
     "gemini-3.6-flash",
@@ -53,34 +54,41 @@ SYSTEM_PROMPT = (
 
 
 async def render_latex_to_image(latex_str: str) -> bytes | None:
-    """Render a LaTeX formula block into a Telegram-ready PNG."""
-    formula = latex_str.strip()
-    if not formula:
+    """Render a LaTeX formula block with CodeCogs into a Telegram-ready PNG."""
+    latex_code = latex_str.strip()
+    if not latex_code:
         return None
 
+    url = (
+        f"{CODECOGS_LATEX_URL}?\\dpi{{300}}\\bg{{18181b}}\\color{{white}} "
+        f"{urllib.parse.quote(latex_code)}"
+    )
     timeout = aiohttp.ClientTimeout(total=30)
-    params = {
-        "formula": formula,
-        "textColor": "white",
-        "backgroundColor": "18181b",
-        "density": "300",
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36"
+        )
     }
     try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(QUICKCHART_LATEX_URL, params=params) as response:
+        async with aiohttp.ClientSession(
+            timeout=timeout,
+            headers=headers,
+        ) as session:
+            async with session.get(url) as response:
                 if response.status != 200:
-                    logger.warning("QuickChart returned HTTP %s", response.status)
+                    logger.warning("CodeCogs returned HTTP %s", response.status)
                     return None
                 image_bytes = await response.read()
                 if not image_bytes:
-                    logger.warning("QuickChart returned an empty image")
+                    logger.warning("CodeCogs returned an empty image")
                     return None
                 return image_bytes
     except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-        logger.warning("QuickChart LaTeX rendering failed: %s", e)
+        logger.warning("CodeCogs LaTeX rendering failed: %s", e)
         return None
     except Exception as e:
-        logger.error("Unexpected QuickChart rendering error: %s", e, exc_info=True)
+        logger.error("Unexpected CodeCogs rendering error: %s", e, exc_info=True)
         return None
 
 
