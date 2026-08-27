@@ -70,6 +70,10 @@ async def send_log(
         logger.debug("send_log: LOG_CHANNEL_ID not configured — skipping")
         return False
 
+    if not isinstance(LOG_CHANNEL_ID, int):
+        logger.debug("send_log: invalid LOG_CHANNEL_ID — skipping")
+        return False
+
     if not bot:
         logger.warning("send_log: called without bot instance")
         return False
@@ -88,11 +92,23 @@ async def send_log(
         return True
 
     except TelegramAPIError as e:
-        logger.warning(
-            "Failed to send log to channel %s (Telegram API error): %s",
-            LOG_CHANNEL_ID,
-            e,
+        error_text = str(e).lower()
+        expected_channel_errors = (
+            "chat not found",
+            "not enough rights",
+            "administrator rights",
+            "bot is not a member",
         )
+        if any(marker in error_text for marker in expected_channel_errors):
+            logger.debug(
+                "send_log skipped for channel %s: %s", LOG_CHANNEL_ID, e
+            )
+        else:
+            logger.warning(
+                "Failed to send log to channel %s (Telegram API error): %s",
+                LOG_CHANNEL_ID,
+                e,
+            )
         return False
     except Exception as e:
         logger.warning(
