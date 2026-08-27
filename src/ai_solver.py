@@ -6,10 +6,15 @@ from google import genai
 from google.genai.errors import APIError, ServerError
 from google.genai import types
 
-from src.config import GEMINI_API_KEY, GEMINI_MODEL
+from src.config import GEMINI_API_KEY
 
 logger = logging.getLogger(__name__)
 QUICKCHART_LATEX_URL = "https://quickchart.io/latex"
+FALLBACK_MODELS = [
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-2.5-pro",
+]
 
 
 class HomeworkSolverError(RuntimeError):
@@ -90,36 +95,62 @@ async def solve_homework(
         raise ValueError("Homework input is empty")
 
     client = None
+    last_retry_status = None
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
-        response = await client.aio.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=contents,
-            config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT),
-        )
-        answer = (response.text or "").strip()
-        if not answer:
-            raise HomeworkSolverError("Gemini returned an empty response")
-        return answer
-    except ServerError as e:
-        status_code = getattr(e, "status_code", None)
-        logger.warning("Gemini server error (%s): %s", status_code or 503, e)
-        raise HomeworkSolverError(
-            "Gemini server is temporarily overloaded",
-            "⚠️ ម៉ាស៊ីនមេ AI កំពុងមានអ្នកប្រើប្រាស់ច្រើន (High Demand)។ "
-            "សូមរង់ចាំប្រហែល ១ នាទី រួចសាកល្បងម្ដងទៀត!",
-        ) from e
-    except APIError as e:
-        status_code = getattr(e, "status_code", None)
-        logger.warning("Gemini API request failed (%s): %s", status_code, e)
-        if status_code in (429, 503):
+        for model in FALLBACK_MODELS:
+            try:
+                logger.info("Trying Gemini model: %s", model)
+                response = await client.aio.models.generate_content(
+                    model=model,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=SYSTEM_PROMPT
+                    ),
+                )
+                answer = (response.text or "").strip()
+                if not answer:
+                    raise HomeworkSolverError("Gemini returned an empty response")
+                return answer
+            except ServerError as e:
+                status_code = getattr(e, "status_code", None) or 503
+                if status_code not in (429, 503, 404):
+                    raise HomeworkSolverError(
+                        "The homework service is temporarily unavailable"
+                    ) from e
+                last_retry_status = status_code
+                logger.warning(
+                    "Gemini model %s failed with server error %s; trying fallback",
+                    model,
+                    status_code,
+                )
+            except APIError as e:
+                status_code = getattr(e, "status_code", None)
+                if status_code not in (429, 503, 404):
+                    raise HomeworkSolverError(
+                        "The homework service is temporarily unavailable"
+                    ) from e
+                last_retry_status = status_code
+                logger.warning(
+                    "Gemini model %s failed with API error %s; trying fallback",
+                    model,
+                    status_code,
+                )
+
+        if last_retry_status == 503:
+            raise HomeworkSolverError(
+                "Gemini server is temporarily overloaded",
+                "⚠️ ម៉ាស៊ីនមេ AI កំពុងមានអ្នកប្រើប្រាស់ច្រើន (High Demand)។ "
+                "សូមរង់ចាំប្រហែល ១ នាទី រួចសាកល្បងម្ដងទៀត!",
+            )
+        if last_retry_status == 429:
             raise HomeworkSolverError(
                 "Gemini request was rate limited",
                 "⚠️ សេវា AI កំពុងមានការស្នើសុំច្រើន។ សូមរង់ចាំបន្តិច រួចសាកល្បងម្ដងទៀត។",
-            ) from e
+            )
         raise HomeworkSolverError(
-            "The homework service is temporarily unavailable"
-        ) from e
+            "No configured Gemini model is available"
+        )
     except HomeworkSolverError:
         raise
     except Exception as e:
