@@ -19,12 +19,10 @@ CODECOGS_LATEX_URL = "https://latex.codecogs.com/png.image"
 
 # បញ្ជីម៉ូដែលដែលមានស្ថេរភាព និងគាំទ្រ Vision ច្បាស់បំផុត
 FALLBACK_MODELS = [
-    "gemini-2.0-flash",
-    "gemini-1.5-flash",
-    "gemini-1.5-pro",
-    "gemini-2.5-pro",
+    "gemini-3.6-flash",          # ម៉ូដែលថ្មីលឿន (ណែនាំដោយ error message)
+    "gemini-3.1-pro-preview",    # Pro fallback
+    "gemini-flash-latest",       # alias ថេរ មិនងាយ retire
 ]
-
 
 class HomeworkSolverError(RuntimeError):
     """Safe, user-facing failure raised when Gemini cannot solve homework."""
