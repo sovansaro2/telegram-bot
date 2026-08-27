@@ -16,12 +16,13 @@ from src.config import GEMINI_API_KEY
 logger = logging.getLogger(__name__)
 
 CODECOGS_LATEX_URL = "https://latex.codecogs.com/png.image"
+
+# បញ្ជីម៉ូដែលដែលមានស្ថេរភាព និងគាំទ្រ Vision ច្បាស់បំផុត
 FALLBACK_MODELS = [
-    "gemini-3.7-flash",
-    "gemini-3.6-flash",
     "gemini-2.0-flash",
-    "gemini-1.5-pro",
     "gemini-1.5-flash",
+    "gemini-1.5-pro",
+    "gemini-2.5-pro",
 ]
 
 
@@ -67,7 +68,6 @@ async def render_latex_to_image(latex_str: str) -> bytes | None:
         if not latex_code:
             return None
 
-        # បញ្ចូល styling ផ្ទៃខ្មៅ អក្សរស DPI 300 រួច encode ទាំងស្រុង
         full_latex = f"\\dpi{{300}} \\bg{{18181b}} \\color{{white}} {latex_code}"
         encoded_query = urllib.parse.quote(full_latex)
         url = f"{CODECOGS_LATEX_URL}?{encoded_query}"
@@ -104,24 +104,12 @@ async def solve_homework(
         )
 
     contents: list[object] = []
-    if question.strip():
-        contents.append(question.strip())
 
+    # ដាក់រូបភាពចូល contents ដោយផ្ទាល់តាមរយៈ PIL Image
     if image_bytes:
         try:
-            with Image.open(BytesIO(image_bytes)) as image:
-                image.load()
-                normalized_image = BytesIO()
-                image.convert("RGB").save(normalized_image, format="JPEG")
-            processed_bytes = normalized_image.getvalue()
-            if not processed_bytes:
-                raise ValueError("Normalized image is empty")
-            contents.append(
-                types.Part.from_bytes(
-                    data=processed_bytes,
-                    mime_type="image/jpeg",
-                )
-            )
+            image = Image.open(BytesIO(image_bytes))
+            contents.append(image)
         except Exception as e:
             logger.warning("Invalid homework image: %s", e)
             raise HomeworkSolverError(
@@ -129,13 +117,19 @@ async def solve_homework(
                 "❌ មិនអាចអានរូបថតលំហាត់បានទេ។ សូមផ្ញើរូបភាពដែលច្បាស់ និងត្រឹមត្រូវ។",
             ) from e
 
-    if not contents:
-        raise ValueError("Homework input is empty")
+    prompt_text = (
+        question.strip()
+        if question.strip()
+        else "សូមជួយដោះស្រាយលំហាត់ក្នុងរូបភាពនេះជាជំហានៗឱ្យបានក្បោះក្បាយ និងត្រឹមត្រូវជាភាសាខ្មែរ។"
+    )
+    contents.append(prompt_text)
 
     client = None
-    last_retry_status = None
+    last_status = None
+
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
+
         for model_name in FALLBACK_MODELS:
             try:
                 logger.info("Trying Gemini model: %s", model_name)
@@ -148,7 +142,7 @@ async def solve_homework(
                 )
                 raw_answer = (response.text or "").strip()
                 if not raw_answer:
-                    raise HomeworkSolverError("Gemini returned an empty response")
+                    continue
 
                 if "===LATEX_BLOCK===" in raw_answer:
                     latex_code, text_explanation = raw_answer.split(
@@ -163,56 +157,44 @@ async def solve_homework(
                     return rendered_img, text_explanation
 
                 return None, raw_answer
-            except ServerError as e:
-                logger.exception("Model %s encountered a server error: %s", model_name, e)
-                status_code = getattr(e, "status_code", None) or 503
-                if status_code not in (429, 503, 404):
-                    raise HomeworkSolverError(
-                        "The homework service is temporarily unavailable"
-                    ) from e
-                last_retry_status = status_code
-                logger.warning(
-                    "Gemini model %s failed with server error %s; trying fallback",
-                    model_name,
-                    status_code,
+
+            except (ServerError, APIError, Exception) as e:
+                # ស្រង់ status code ដោយសុវត្ថិភាព (e.code ឬ status_code)
+                code = (
+                    getattr(e, "code", None)
+                    or getattr(e, "status_code", None)
+                    or 500
                 )
-                if status_code == 503:
-                    await asyncio.sleep(1.5)
-            except APIError as e:
-                logger.exception("Model %s encountered an API error: %s", model_name, e)
-                status_code = getattr(e, "status_code", None)
-                if status_code not in (429, 503, 404):
-                    raise HomeworkSolverError(
-                        "The homework service is temporarily unavailable"
-                    ) from e
-                last_retry_status = status_code
+                last_status = code
                 logger.warning(
-                    "Gemini model %s failed with API error %s; trying fallback",
+                    "Model %s failed with code %s (%s); switching to next model...",
                     model_name,
-                    status_code,
+                    code,
+                    e,
                 )
                 await asyncio.sleep(1)
+                continue
 
-        if last_retry_status == 503:
+        if last_status in (503, 500):
             raise HomeworkSolverError(
-                "Gemini server is temporarily overloaded",
+                "Gemini server overloaded",
                 "⚠️ ម៉ាស៊ីនមេ AI កំពុងមានអ្នកប្រើប្រាស់ច្រើន (High Demand)។ "
                 "សូមរង់ចាំប្រហែល ១ នាទី រួចសាកល្បងម្ដងទៀត!",
             )
-        if last_retry_status == 429:
+        if last_status == 429:
             raise HomeworkSolverError(
-                "Gemini request was rate limited",
+                "Gemini rate limit",
                 "⚠️ សេវា AI កំពុងមានការស្នើសុំច្រើន។ សូមរង់ចាំបន្តិច រួចសាកល្បងម្ដងទៀត។",
             )
-        raise HomeworkSolverError("No configured Gemini model is available")
-    except HomeworkSolverError:
-        raise
-    except Exception as e:
-        logger.error("Unexpected Gemini solver error: %s", e, exc_info=True)
-        raise HomeworkSolverError("The homework service could not process the request") from e
+
+        raise HomeworkSolverError(
+            "All fallback models failed",
+            "❌ មិនអាចដោះស្រាយលំហាត់បានទេនៅពេលនេះ។ សូមព្យាយាមម្តងទៀត។",
+        )
+
     finally:
         if client is not None:
             try:
                 await client.aio.aclose()
-            except Exception as e:
-                logger.warning("Could not close Gemini client cleanly: %s", e)
+            except Exception:
+                pass
