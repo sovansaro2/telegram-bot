@@ -15,7 +15,9 @@ CODECOGS_LATEX_URL = "https://latex.codecogs.com/png.image"
 FALLBACK_MODELS = [
     "gemini-3.7-flash",
     "gemini-3.6-flash",
-    "gemini-2.5-pro",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
 ]
 
 
@@ -152,6 +154,8 @@ async def solve_homework(
                     model,
                     status_code,
                 )
+                if status_code == 503:
+                    await asyncio.sleep(1.5)
             except APIError as e:
                 status_code = getattr(e, "status_code", None)
                 if status_code not in (429, 503, 404):
