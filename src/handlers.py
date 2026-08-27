@@ -556,11 +556,10 @@ async def send_homework_solution(
             await progress_message.edit_text(solution, parse_mode="Markdown")
         except TelegramBadRequest:
             await progress_message.edit_text(solution)
-    except HomeworkSolverError:
+    except HomeworkSolverError as e:
         await safe_edit_text(
             progress_message,
-            "❌ សេវា AI មិនអាចដោះស្រាយលំហាត់បាននៅពេលនេះទេ។ "
-            "សូមព្យាយាមម្តងទៀតនៅពេលក្រោយ។",
+            e.user_message,
             parse_mode="HTML",
         )
     except Exception as e:
@@ -1078,7 +1077,7 @@ async def handle_report(message: Message, state: FSMContext):
         )
         await message.answer("✅ បានផ្ញើ report ទៅ Admin រួចរាល់。")
     except Exception as e:
-        logger.error(f"Failed to send report: {e}")
+        logger.warning(f"Failed to send report to REPORT_CHANNEL_ID: {e}")
         await message.answer("❌ មិនអាចផ្ញើ report បានទេ។ សូមព្យាយាមម្តងទៀត。")
     finally:
         await state.clear()

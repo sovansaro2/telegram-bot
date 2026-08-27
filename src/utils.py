@@ -5,6 +5,7 @@ import re
 from typing import Optional
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramAPIError
 from src.config import LOG_CHANNEL_ID
 
 logger = logging.getLogger(__name__)
@@ -86,8 +87,17 @@ async def send_log(
         )
         return True
 
+    except TelegramAPIError as e:
+        logger.warning(
+            "Failed to send log to channel %s (Telegram API error): %s",
+            LOG_CHANNEL_ID,
+            e,
+        )
+        return False
     except Exception as e:
-        logger.error(f"⚠️ Failed to send log to channel {LOG_CHANNEL_ID}: {e}")
+        logger.warning(
+            "Failed to send log to channel %s: %s", LOG_CHANNEL_ID, e
+        )
         return False
 
 
