@@ -2,46 +2,42 @@ import asyncio
 import logging
 import os
 import re
+from datetime import datetime, timezone
+from html import escape
 from io import BytesIO
 from types import SimpleNamespace
-from html import escape
-from datetime import datetime, timezone
 
-from src.tts_engine import generate_speech
-from src.pdf_converter import pdf_converter
-from src.ai_solver import (
-    HomeworkSolverError,
-    solve_homework,
-)
-
-from aiogram import Router, F, Bot
-from aiogram.types import (
-    Message,
-    CallbackQuery,
-    BufferedInputFile,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    FSInputFile,
-    InputMediaPhoto,
-)
-from aiogram.filters import CommandStart, Command, CommandObject
+from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import ChatMemberUpdated
+from aiogram.types import (
+    BufferedInputFile,
+    CallbackQuery,
+    ChatMemberUpdated,
+    FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputMediaPhoto,
+    Message,
+)
 
+from src.ai_solver import HomeworkSolverError, solve_homework
 from src.config import (
     ADMIN_ID,
+    DOWNLOAD_TIMEOUT,
     LOG_CHANNEL_ID,
     MAX_FILE_SIZE,
-    DOWNLOAD_TIMEOUT,
     REPORT_CHANNEL_ID,
 )
 from src.database import db
 from src.downloader import downloader
-from src.utils import send_log, safe_remove_file
-from src.security.validators import validate_and_normalize_url
 from src.errors import BotError
+from src.pdf_converter import pdf_converter
+from src.security.validators import validate_and_normalize_url
+from src.tts_engine import generate_speech
+from src.utils import safe_remove_file, send_log
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -55,20 +51,25 @@ class DownloadState(StatesGroup):
     waiting_for_format = State()
     waiting_for_url = State()
 
+
 class ReportState(StatesGroup):
     waiting_for_report = State()
 
+
 class ConvertState(StatesGroup):
     waiting_for_video = State()
+
 
 class TTSState(StatesGroup):
     waiting_for_voice = State()
     waiting_for_text = State()
 
+
 class PdfState(StatesGroup):
     waiting_for_pdf = State()
     waiting_for_format = State()
     waiting_for_pages = State()
+
 
 class HomeworkState(StatesGroup):
     waiting_for_homework = State()
@@ -80,6 +81,7 @@ class HomeworkState(StatesGroup):
 
 def escape_markdown_v2(text: str) -> str:
     return re.sub(r"([_\*\[\]\(\)~`>#+\-=|{}.!\\])", r"\\\1", text or "")
+
 
 def friendly_download_error(url: str, err: str) -> str:
     u = (url or "").lower()
@@ -189,6 +191,7 @@ def get_main_menu_keyboard() -> InlineKeyboardMarkup:
         ]
     )
 
+
 def general_info_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -209,6 +212,7 @@ def general_info_keyboard() -> InlineKeyboardMarkup:
         ]
     )
 
+
 def tts_voice_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -218,9 +222,10 @@ def tts_voice_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(text="⬅ បោះបង់", callback_data="feat_back"),
-            ]
+            ],
         ]
     )
+
 
 FEATURE_PANELS = {
     "feat_howto": (
@@ -260,23 +265,10 @@ FEATURE_PANELS = {
     ),
 }
 
+
 # ─────────────────────────────────────────────
 # Helper: Format Selection Keyboard
 # ─────────────────────────────────────────────
-
-def download_type_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="🎬 Video (MP4)", callback_data="fmt_video"
-                ),
-                InlineKeyboardButton(
-                    text="🎵 Audio (MP3)", callback_data="fmt_audio"
-                ),
-            ]
-        ]
-    )
 
 def format_select_keyboard(platform: str) -> InlineKeyboardMarkup:
     if platform == "tiktok":
@@ -291,15 +283,14 @@ def format_select_keyboard(platform: str) -> InlineKeyboardMarkup:
                 ],
             ]
         )
-    else:
-        return InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(text="🎬 វីដេអូ", callback_data="fmt_video"),
-                    InlineKeyboardButton(text="🎵 អូឌីយ៉ូ", callback_data="fmt_audio"),
-                ]
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🎬 វីដេអូ", callback_data="fmt_video"),
+                InlineKeyboardButton(text="🎵 អូឌីយ៉ូ", callback_data="fmt_audio"),
             ]
-        )
+        ]
+    )
 
 
 # ─────────────────────────────────────────────
@@ -315,21 +306,24 @@ async def safe_delete_message(bot: Bot, chat_id: int, message_id: int) -> bool:
         if "message to delete not found" in err:
             return True
         if "message can't be deleted" in err:
-            logger.warning(f"⚠️ Cannot delete message {message_id}")
+            logger.warning("⚠️ Cannot delete message %s", message_id)
             return False
         return False
     except Exception as e:
-        logger.error(f"❌ Unexpected error deleting message {message_id}: {e}")
+        logger.error("❌ Unexpected error deleting message %s: %s", message_id, e)
         return False
 
-async def safe_edit_text(message: Message, new_text: str, parse_mode: str = "HTML", **kwargs) -> Message:
+
+async def safe_edit_text(
+    message: Message, new_text: str, parse_mode: str = "HTML", **kwargs
+) -> Message:
     try:
         return await message.edit_text(new_text, parse_mode=parse_mode, **kwargs)
     except TelegramBadRequest as e:
-        logger.warning(f"⚠️ safe_edit_text ignored TelegramBadRequest: {e}")
-        return message 
+        logger.warning("⚠️ safe_edit_text ignored TelegramBadRequest: %s", e)
+        return message
     except Exception as e:
-        logger.error(f"❌ safe_edit_text encountered unexpected error: {e}")
+        logger.error("❌ safe_edit_text encountered unexpected error: %s", e)
         return message
 
 
@@ -369,59 +363,70 @@ async def feature_menu_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
     if callback.data == "feat_general_info":
-        await safe_edit_text(callback.message,
+        await safe_edit_text(
+            callback.message,
             "ℹ️ <b>ព័ត៌មានទូទៅ</b>\n\n"
             "សូមជ្រើសរើសព័ត៌មានដែលអ្នកចង់ស្វែងយល់ខាងក្រោម៖",
             parse_mode="HTML",
-            reply_markup=general_info_keyboard()
+            reply_markup=general_info_keyboard(),
         )
         return
 
     if callback.data == "feat_report":
         await state.set_state(ReportState.waiting_for_report)
-        await safe_edit_text(callback.message,
+        await safe_edit_text(
+            callback.message,
             "📩 <b>សូមវាយសារជូនដំណឹង!</b>\n\n"
             "សរសេរសាររបស់អ្នកនៅទីនេះ ហើយផ្ញើមកខ្ញុំ។",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="⬅ ត្រឡប់", callback_data="feat_general_info")]]
-            )
+                inline_keyboard=[[
+                    InlineKeyboardButton(text="⬅ ត្រឡប់", callback_data="feat_general_info")
+                ]]
+            ),
         )
         return
 
     if callback.data == "feat_convert":
         await state.set_state(ConvertState.waiting_for_video)
-        await safe_edit_text(callback.message,
+        await safe_edit_text(
+            callback.message,
             "🔄 <b>បំលែង Video ទៅជា MP3</b>\n\n"
             "សូមផ្ញើ <b>ឯកសារវីដេអូ</b> របស់អ្នកចូលមកក្នុង Chat នេះ (ទំហំអតិបរមា 20MB)។\n\n"
             "<i>ចំណាំ៖ សូមផ្ញើជាវីដេអូផ្ទាល់ មិនមែនជា Link ទេ។</i>",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="⬅ បោះបង់", callback_data="feat_back")]]
-            )
+                inline_keyboard=[[
+                    InlineKeyboardButton(text="⬅ បោះបង់", callback_data="feat_back")
+                ]]
+            ),
         )
         return
 
     if callback.data == "feat_tts":
         await state.set_state(TTSState.waiting_for_voice)
-        await safe_edit_text(callback.message,
+        await safe_edit_text(
+            callback.message,
             "🗣️ <b>អានអត្ថបទ (Text-to-Speech)</b>\n\n"
             "សូមជ្រើសរើសប្រភេទសំឡេងដែលអ្នកចង់បាន:",
             parse_mode="HTML",
-            reply_markup=tts_voice_keyboard()
+            reply_markup=tts_voice_keyboard(),
         )
         return
 
     if callback.data == "feat_pdf":
         await state.set_state(PdfState.waiting_for_pdf)
-        await safe_edit_text(callback.message,
+        await safe_edit_text(
+            callback.message,
             "📄 <b>បំលែង PDF ទៅជារូបភាព</b>\n\n"
             "សូមផ្ញើ <b>ឯកសារ PDF</b> របស់អ្នកចូលមកក្នុង Chat នេះ (ទំហំអតិបរមា 20MB)។\n\n"
             "<i>ចំណាំ៖ សូមផ្ញើជាឯកសារ PDF ផ្ទាល់ មិនមែនជា Link ទេ។</i>",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="⬅ បោះបង់", callback_data="feat_back")]]
-            )
+                inline_keyboard=[[
+                    InlineKeyboardButton(text="⬅ បោះបង់", callback_data="feat_back")
+                ]]
+            ),
         )
         return
 
@@ -448,8 +453,10 @@ async def feature_menu_callback(callback: CallbackQuery, state: FSMContext):
                 "សូមផ្ញើ Link Video ដើម្បីធ្វើការទាញយក:",
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[[InlineKeyboardButton(text="⬅ បោះបង់", callback_data="feat_back")]]
-                )
+                    inline_keyboard=[[
+                        InlineKeyboardButton(text="⬅ បោះបង់", callback_data="feat_back")
+                    ]]
+                ),
             )
         except Exception:
             pass
@@ -551,17 +558,30 @@ async def send_homework_solution(
         parse_mode="HTML",
     )
     try:
-        image_bytes, text_explanation = await solve_homework(
+        math_img, text_explanation = await solve_homework(
             question=question,
             image_bytes=image_bytes,
             mime_type=mime_type,
         )
-        await progress_message.delete()
-        if image_bytes:
+
+        # ផ្ញើរូបភាពរូបមន្តគណិត (ប្រសិនបើមាន)
+        if math_img:
             await message.answer_photo(
-                photo=BufferedInputFile(image_bytes, filename="solution.png")
+                photo=BufferedInputFile(math_img, filename="solution.png")
             )
-        await message.answer(text_explanation)
+
+        # ផ្ញើអត្ថបទពន្យល់ដោយបំបែកជាចំណែកតូចៗប្រសិនបើលើស 4000 តួអក្សរ
+        if len(text_explanation) <= 4000:
+            await message.answer(text_explanation)
+        else:
+            for i in range(0, len(text_explanation), 4000):
+                await message.answer(text_explanation[i:i + 4000])
+
+        # លុប progress message ក្រោយពេលផ្ញើសម្រេច
+        await safe_delete_message(
+            message.bot, message.chat.id, progress_message.message_id
+        )
+
     except HomeworkSolverError as e:
         await safe_edit_text(
             progress_message,
@@ -569,7 +589,7 @@ async def send_homework_solution(
             parse_mode="HTML",
         )
     except Exception as e:
-        logger.error(f"Homework solver error: {e}", exc_info=True)
+        logger.error("Homework solver error: %s", e, exc_info=True)
         await safe_edit_text(
             progress_message,
             "❌ មិនអាចដោះស្រាយលំហាត់បានទេនៅពេលនេះ។ "
@@ -603,7 +623,7 @@ async def handle_homework_photo(message: Message, state: FSMContext):
             mime_type="image/jpeg",
         )
     except Exception as e:
-        logger.error(f"Homework image download error: {e}", exc_info=True)
+        logger.error("Homework image download error: %s", e, exc_info=True)
         await message.answer(
             "❌ មិនអាចអានរូបថតបានទេ។ សូមផ្ញើរូបភាពម្តងទៀត។",
             parse_mode="HTML",
@@ -626,60 +646,83 @@ async def handle_homework_invalid_input(message: Message):
 @router.message(ConvertState.waiting_for_video, F.video | F.document)
 async def handle_local_video(message: Message, state: FSMContext):
     video = message.video or message.document
-    
-    if message.document and not message.document.mime_type.startswith('video/'):
+
+    if message.document and not message.document.mime_type.startswith("video/"):
         await message.answer("⚠️ សូមផ្ញើជាប្រភេទឯកសារ <b>វីដេអូ (Video)</b>។", parse_mode="HTML")
         return
 
     if video.file_size > 20 * 1024 * 1024:
-        await message.answer("❌ <b>វីដេអូធំពេកហើយ!</b>\n\nទំហំអតិបរមាដែលអនុញ្ញាតគឺ <b>20MB</b>។ សូមផ្ញើវីដេអូខ្លីជាងនេះ។", parse_mode="HTML")
+        await message.answer(
+            "❌ <b>វីដេអូធំពេកហើយ!</b>\n\nទំហំអតិបរមាដែលអនុញ្ញាតគឺ <b>20MB</b>។ សូមផ្ញើវីដេអូខ្លីជាងនេះ។",
+            parse_mode="HTML",
+        )
         return
 
     prog_msg = await message.answer("⏳ <b>កំពុងទាញយកវីដេអូរបស់អ្នក...</b>", parse_mode="HTML")
 
     file_id = video.file_id
     file = await message.bot.get_file(file_id)
-    file_ext = file.file_path.split('.')[-1]
+    file_ext = file.file_path.split(".")[-1]
     input_path = f"temp_in_{file_id}.{file_ext}"
     output_path = f"temp_out_{file_id}.mp3"
 
     try:
         await message.bot.download_file(file.file_path, input_path)
-        await safe_edit_text(prog_msg, "⏳ <b>កំពុងបំលែងទៅជា MP3...</b>\n<i>សូមរង់ចាំបន្តិច...</i>", parse_mode="HTML")
+        await safe_edit_text(
+            prog_msg,
+            "⏳ <b>កំពុងបំលែងទៅជា MP3...</b>\n<i>សូមរង់ចាំបន្តិច...</i>",
+            parse_mode="HTML",
+        )
 
         process = await asyncio.create_subprocess_exec(
-            'ffmpeg', '-i', input_path, '-q:a', '0', '-map', 'a', output_path, '-y',
+            "ffmpeg", "-i", input_path, "-q:a", "0", "-map", "a", output_path, "-y",
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await process.communicate()
 
         if process.returncode != 0:
-            logger.error(f"FFmpeg conversion error: {stderr.decode()}")
-            await safe_edit_text(prog_msg, "❌ <b>សុំទោស មានបញ្ហាក្នុងការបំលែងវីដេអូនេះ។</b>\nសូមព្យាយាមវីដេអូផ្សេង។", parse_mode="HTML")
+            logger.error("FFmpeg conversion error: %s", stderr.decode())
+            await safe_edit_text(
+                prog_msg,
+                "❌ <b>សុំទោស មានបញ្ហាក្នុងការបំលែងវីដេអូនេះ។</b>\nសូមព្យាយាមវីដេអូផ្សេង។",
+                parse_mode="HTML",
+            )
             return
 
         await safe_edit_text(prog_msg, "📤 <b>កំពុងបញ្ជូនសំឡេងទៅកាន់អ្នក...</b>", parse_mode="HTML")
 
         audio_file = FSInputFile(output_path)
-        await message.answer_audio(audio=audio_file, title="Converted Audio", performer="@v_videodownloader_bot")
+        await message.answer_audio(
+            audio=audio_file,
+            title="Converted Audio",
+            performer="@v_videodownloader_bot",
+        )
 
     except Exception as e:
-        logger.error(f"Error in video conversion: {e}", exc_info=True)
-        await safe_edit_text(prog_msg, "❌ <b>មានបញ្ហាប្រព័ន្ធ។</b> សូមសាកល្បងម្ដងទៀតនៅពេលក្រោយ។", parse_mode="HTML")
+        logger.error("Error in video conversion: %s", e, exc_info=True)
+        await safe_edit_text(
+            prog_msg,
+            "❌ <b>មានបញ្ហាប្រព័ន្ធ។</b> សូមសាកល្បងម្ដងទៀតនៅពេលក្រោយ។",
+            parse_mode="HTML",
+        )
     finally:
         try:
             await prog_msg.delete()
-        except:
+        except Exception:
             pass
         for p in [input_path, output_path]:
             if os.path.exists(p):
                 os.remove(p)
         await state.clear()
 
+
 @router.message(ConvertState.waiting_for_video)
 async def handle_convert_invalid_input(message: Message):
-    await message.answer("⚠️ សូមផ្ញើជា <b>ឯកសារវីដេអូ (Video File)</b> ដែលមានក្នុងទូរស័ព្ទរបស់អ្នក មិនមែនជាអត្ថបទ ឬ Link ទេ។", parse_mode="HTML")
+    await message.answer(
+        "⚠️ សូមផ្ញើជា <b>ឯកសារវីដេអូ (Video File)</b> ដែលមានក្នុងទូរស័ព្ទរបស់អ្នក មិនមែនជាអត្ថបទ ឬ Link ទេ។",
+        parse_mode="HTML",
+    )
 
 
 # ─────────────────────────────────────────────
@@ -764,7 +807,7 @@ async def handle_pdf_document(message: Message, state: FSMContext):
             reply_markup=pdf_format_keyboard(total_pages),
         )
     except Exception as e:
-        logger.error(f"PDF download error: {e}", exc_info=True)
+        logger.error("PDF download error: %s", e, exc_info=True)
         await safe_edit_text(
             prog_msg,
             "❌ <b>មានបញ្ហាក្នុងការទាញយក PDF ។</b> សូមព្យាយាមម្ដងទៀត។",
@@ -861,7 +904,9 @@ async def handle_pdf_pages_invalid(message: Message):
     )
 
 
-async def _run_pdf_conversion(callback: CallbackQuery, state: FSMContext, image_format: str, pages: list):
+async def _run_pdf_conversion(
+    callback: CallbackQuery, state: FSMContext, image_format: str, pages: list
+):
     prog_msg = await safe_edit_text(
         callback.message,
         f"⏳ <b>កំពុងបំលែង {len(pages)} ទំព័រទៅ {image_format.upper()}...</b>\n"
@@ -871,14 +916,18 @@ async def _run_pdf_conversion(callback: CallbackQuery, state: FSMContext, image_
     await _run_pdf_conversion_with_msg(callback, prog_msg, state, image_format, pages)
 
 
-async def _run_pdf_conversion_with_msg(ctx, prog_msg, state: FSMContext, image_format: str, pages: list):
+async def _run_pdf_conversion_with_msg(
+    ctx, prog_msg, state: FSMContext, image_format: str, pages: list
+):
     bot = ctx.bot
     data = await state.get_data()
     pdf_path = data.get("pdf_path")
     chat_id = ctx.message.chat.id if hasattr(ctx, "message") else ctx.chat.id
 
     if not pdf_path or not os.path.exists(pdf_path):
-        await safe_edit_text(prog_msg, "❌ សម័យផុតកំណត់។ សូមផ្ញើ PDF ម្តងទៀត។", parse_mode="HTML")
+        await safe_edit_text(
+            prog_msg, "❌ សម័យផុតកំណត់។ សូមផ្ញើ PDF ម្តងទៀត។", parse_mode="HTML"
+        )
         await state.clear()
         return
 
@@ -906,7 +955,8 @@ async def _run_pdf_conversion_with_msg(ctx, prog_msg, state: FSMContext, image_f
         return
 
     image_paths = [
-        p for p in result.get("file_paths", [])
+        p
+        for p in result.get("file_paths", [])
         if isinstance(p, str) and os.path.exists(p)
     ]
     if not image_paths:
@@ -922,7 +972,7 @@ async def _run_pdf_conversion_with_msg(ctx, prog_msg, state: FSMContext, image_f
 
     try:
         for i in range(0, len(image_paths), 10):
-            chunk = image_paths[i:i + 10]
+            chunk = image_paths[i : i + 10]
             media = [InputMediaPhoto(media=FSInputFile(p)) for p in chunk]
             await bot.send_media_group(chat_id=chat_id, media=media)
 
@@ -933,14 +983,14 @@ async def _run_pdf_conversion_with_msg(ctx, prog_msg, state: FSMContext, image_f
             bot=bot,
         )
     except TelegramBadRequest as e:
-        logger.error(f"PDF upload error: {e}", exc_info=True)
+        logger.error("PDF upload error: %s", e, exc_info=True)
         await bot.send_message(
             chat_id=chat_id,
             text=f"❌ <b>មិនអាចបញ្ជូនរូបភាពបានទេ។</b>\n\n<code>{escape(str(e)[:200])}</code>",
             parse_mode="HTML",
         )
     except Exception as e:
-        logger.error(f"PDF send error: {e}", exc_info=True)
+        logger.error("PDF send error: %s", e, exc_info=True)
         await bot.send_message(
             chat_id=chat_id,
             text="❌ <b>មានបញ្ហាក្នុងការបញ្ជូនរូបភាព។</b> សូមព្យាយាមម្ដងទៀត។",
@@ -975,71 +1025,86 @@ async def handle_tts_voice_selection(callback: CallbackQuery, state: FSMContext)
     voice_gender = "male" if callback.data == "tts_voice_male" else "female"
     await state.update_data(voice_gender=voice_gender)
     await state.set_state(TTSState.waiting_for_text)
-    
+
     voice_label = "👨 ប្រុស" if voice_gender == "male" else "👩 ស្រី"
-    await safe_edit_text(callback.message,
+    await safe_edit_text(
+        callback.message,
         f"✅ បានជ្រើសរើសសំឡេង: <b>{voice_label}</b>\n\n"
         "🗣️ សូមវាយ ឬ Copy អត្ថបទជា <b>ភាសាខ្មែរ ឬអង់គ្លេស</b> បញ្ចូលមកទីនេះ។\n\n"
         "<i>ចំណាំ៖ សូមបញ្ចូលអត្ថបទក្រោម 3000 តួអក្សរ។</i>",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(
-                text="⬅️ បោះបង់", callback_data="feat_back"
-            )]]
-        )
+            inline_keyboard=[[
+                InlineKeyboardButton(text="⬅️ បោះបង់", callback_data="feat_back")
+            ]]
+        ),
     )
+
 
 @router.message(TTSState.waiting_for_text, F.text)
 async def handle_tts_text(message: Message, state: FSMContext):
     text = message.text.strip()
-    
     data = await state.get_data()
-    voice_gender = data.get("voice_gender", "female")  # fallback safety
-    
+    voice_gender = data.get("voice_gender", "female")
+
     if len(text) > 3000:
-        await message.answer("❌ <b>អត្ថបទវែងពេក!</b>\n\nសូមផ្ញើអត្ថបទដែលមានប្រវែងតិចជាង ៣០០០ តួអក្សរ។", parse_mode="HTML")
+        await message.answer(
+            "❌ <b>អត្ថបទវែងពេក!</b>\n\nសូមផ្ញើអត្ថបទដែលមានប្រវែងតិចជាង ៣០០០ តួអក្សរ។",
+            parse_mode="HTML",
+        )
         return
 
-    prog_msg = await message.answer("⏳ <b>កំពុងអានអត្ថបទរបស់អ្នក...</b>\n<i>សូមរង់ចាំបន្តិច...</i>", parse_mode="HTML")
-
+    prog_msg = await message.answer(
+        "⏳ <b>កំពុងអានអត្ថបទរបស់អ្នក...</b>\n<i>សូមរង់ចាំបន្តិច...</i>",
+        parse_mode="HTML",
+    )
     file_path = f"tts_{message.from_user.id}_{int(datetime.now().timestamp())}.mp3"
 
     try:
-        # Native async call ទៅកាន់ edge-tts engine របស់យើង
         success = await generate_speech(text, voice_gender, file_path)
-        
         if not success:
-            await safe_edit_text(prog_msg,
+            await safe_edit_text(
+                prog_msg,
                 "❌ <b>មានបញ្ហាក្នុងការបំប្លែងអត្ថបទទៅជាសំឡេង។</b>\n\n"
                 "សូមព្យាយាមម្តងទៀត ឬសាកល្បងអត្ថបទខ្លីជាងនេះ。",
                 parse_mode="HTML",
             )
             return
 
-        await safe_edit_text(prog_msg, "📤 <b>កំពុងបញ្ជូនសំឡេងទៅកាន់អ្នក...</b>", parse_mode="HTML")
+        await safe_edit_text(
+            prog_msg, "📤 <b>កំពុងបញ្ជូនសំឡេងទៅកាន់អ្នក...</b>", parse_mode="HTML"
+        )
 
         audio_file = FSInputFile(file_path)
         await message.answer_voice(
-            voice=audio_file, 
+            voice=audio_file,
             caption="🗣️ <b>អានរួចរាល់!</b>",
-            parse_mode="HTML"
+            parse_mode="HTML",
         )
 
     except Exception as e:
-        logger.error(f"Error in TTS conversion: {e}", exc_info=True)
-        await safe_edit_text(prog_msg, "❌ <b>មានបញ្ហាក្នុងការបំប្លែងអត្ថបទ។</b> សូមសាកល្បងម្ដងទៀតនៅពេលក្រោយ។", parse_mode="HTML")
+        logger.error("Error in TTS conversion: %s", e, exc_info=True)
+        await safe_edit_text(
+            prog_msg,
+            "❌ <b>មានបញ្ហាក្នុងការបំប្លែងអត្ថបទ។</b> សូមសាកល្បងម្ដងទៀតនៅពេលក្រោយ។",
+            parse_mode="HTML",
+        )
     finally:
         try:
             await prog_msg.delete()
-        except:
+        except Exception:
             pass
         if os.path.exists(file_path):
             os.remove(file_path)
         await state.clear()
 
+
 @router.message(TTSState.waiting_for_text)
 async def handle_tts_invalid_input(message: Message):
-    await message.answer("⚠️ សូមផ្ញើជា <b>អត្ថបទ (Text)</b> មិនមែនជារូបភាព ឬវីដេអូទេ។", parse_mode="HTML")
+    await message.answer(
+        "⚠️ សូមផ្ញើជា <b>អត្ថបទ (Text)</b> មិនមែនជារូបភាព ឬវីដេអូទេ។",
+        parse_mode="HTML",
+    )
 
 
 # ─────────────────────────────────────────────
@@ -1051,9 +1116,10 @@ async def cmd_report(message: Message, state: FSMContext):
     await state.set_state(ReportState.waiting_for_report)
     await message.answer(
         "📩 <b>សូមវាយសារជូនដំណឹង!</b>\n\n"
-        "សរសេរសាររបស់អ្នកនៅទីនេះ ហើយផ្ញើមកខ្ញុំ。",
+        "សរសេរសាររបស់អ្នកនៅទីនេះ ហើយផ្ញើមកខ្ញុំ។",
         parse_mode="HTML",
     )
+
 
 @router.message(ReportState.waiting_for_report, F.text)
 async def handle_report(message: Message, state: FSMContext):
@@ -1084,12 +1150,13 @@ async def handle_report(message: Message, state: FSMContext):
             parse_mode="HTML",
             disable_web_page_preview=True,
         )
-        await message.answer("✅ បានផ្ញើ report ទៅ Admin រួចរាល់。")
+        await message.answer("✅ បានផ្ញើ report ទៅ Admin រួចរាល់។")
     except Exception as e:
-        logger.warning(f"Failed to send report to REPORT_CHANNEL_ID: {e}")
-        await message.answer("❌ មិនអាចផ្ញើ report បានទេ។ សូមព្យាយាមម្តងទៀត。")
+        logger.warning("Failed to send report to REPORT_CHANNEL_ID: %s", e)
+        await message.answer("❌ មិនអាចផ្ញើ report បានទេ។ សូមព្យាយាមម្តងទៀត។")
     finally:
         await state.clear()
+
 
 @router.message(ReportState.waiting_for_report)
 async def handle_report_non_text(message: Message):
@@ -1106,7 +1173,7 @@ async def handle_report_non_text(message: Message):
 @router.message(F.text.regexp(r"(https?://[^\s]+)"))
 async def handle_link(message: Message, state: FSMContext):
     user_id = message.from_user.id
-    await db.get_user(user_id)  
+    await db.get_user(user_id)
 
     current_state = await state.get_state()
     if current_state != DownloadState.waiting_for_url.state:
@@ -1140,12 +1207,12 @@ async def handle_link(message: Message, state: FSMContext):
             url_message_id=message.message_id,
         )
         await state.set_state(DownloadState.waiting_for_format)
-        
+
         progress_msg = await message.answer(
-            f"⏳ <b>កំពុងដំណើរការ...</b>\n",
+            "⏳ <b>កំពុងដំណើរការ...</b>\n",
             parse_mode="HTML",
         )
-        
+
         download_context = SimpleNamespace(
             message=progress_msg,
             data=f"fmt_{selected_type}",
@@ -1155,7 +1222,9 @@ async def handle_link(message: Message, state: FSMContext):
         await process_download_callback(download_context, state)
         return
 
-    await state.update_data(url=url, platform=_platform, url_message_id=message.message_id)
+    await state.update_data(
+        url=url, platform=_platform, url_message_id=message.message_id
+    )
     await state.set_state(DownloadState.waiting_for_format)
 
     keyboard = format_select_keyboard(_platform)
@@ -1176,7 +1245,9 @@ async def handle_link(message: Message, state: FSMContext):
 # ─────────────────────────────────────────────
 
 @router.callback_query(F.data.startswith("fmt_"))
-async def process_download_callback_from_query(callback: CallbackQuery, state: FSMContext):
+async def process_download_callback_from_query(
+    callback: CallbackQuery, state: FSMContext
+):
     await callback.answer()
     download_context = SimpleNamespace(
         message=callback.message,
@@ -1209,7 +1280,9 @@ async def process_download_callback(callback: SimpleNamespace, state: FSMContext
         return
 
     if not url:
-        await safe_edit_text(callback.message, "⚠️ សម័យផុតកំណត់។ សូមផ្ញើ link ម្តងទៀត。")
+        await safe_edit_text(
+            callback.message, "⚠️ សម័យផុតកំណត់។ សូមផ្ញើ link ម្តងទៀត។"
+        )
         return
 
     if callback.data == "fmt_audio":
@@ -1225,9 +1298,9 @@ async def process_download_callback(callback: SimpleNamespace, state: FSMContext
         "video": "VIDEO",
     }.get(download_type, "VIDEO")
 
-    progress_msg = await safe_edit_text(callback.message,
-        f"⏳ <b>កំពុងទាញយក {type_label}...</b>\n"
-        "<i>សូមរង់ចាំបន្តិច...</i>",
+    progress_msg = await safe_edit_text(
+        callback.message,
+        f"⏳ <b>កំពុងទាញយក {type_label}...</b>\n<i>សូមរង់ចាំបន្តិច...</i>",
         parse_mode="HTML",
     )
 
@@ -1237,10 +1310,10 @@ async def process_download_callback(callback: SimpleNamespace, state: FSMContext
             timeout=DOWNLOAD_TIMEOUT,
         )
     except asyncio.TimeoutError:
-        logger.warning(f"⏱ Download timeout: {url}")
-        await safe_edit_text(progress_msg,
-            "❌ <b>ការទាញយកយូរពេកហើយ</b>\n\n"
-            "សូមព្យាយាមជាមួយវីដេអូខ្លីជាងនេះ。",
+        logger.warning("⏱ Download timeout: %s", url)
+        await safe_edit_text(
+            progress_msg,
+            "❌ <b>ការទាញយកយូរពេកហើយ</b>\n\nសូមព្យាយាមជាមួយវីដេអូខ្លីជាងនេះ。",
             parse_mode="HTML",
         )
         await send_log(
@@ -1281,7 +1354,8 @@ async def process_download_callback(callback: SimpleNamespace, state: FSMContext
         ]
 
         if not paths:
-            await safe_edit_text(progress_msg,
+            await safe_edit_text(
+                progress_msg,
                 "❌ <b>មិនអាចរកឃើញរូបភាពបានទេ</b>\n\n"
                 "Link នេះអាចជាវីដេអូ — សូមសាកល្បង 🎬 <b>Video</b> ជំនួស。",
                 parse_mode="HTML",
@@ -1290,7 +1364,7 @@ async def process_download_callback(callback: SimpleNamespace, state: FSMContext
             return
 
         for i in range(0, len(paths), 10):
-            chunk = paths[i: i + 10]
+            chunk = paths[i : i + 10]
             media = [InputMediaPhoto(media=FSInputFile(p)) for p in chunk]
             await callback.message.answer_media_group(media)
 
@@ -1321,7 +1395,8 @@ async def process_download_callback(callback: SimpleNamespace, state: FSMContext
     if os.path.exists(file_path):
         file_size = os.path.getsize(file_path)
         if file_size > MAX_FILE_SIZE:
-            await safe_edit_text(progress_msg,
+            await safe_edit_text(
+                progress_msg,
                 f"❌ <b>ឯកសារធំពេកសម្រាប់ Telegram</b>\n\n"
                 f"📊 ទំហំ: {file_size / 1024 / 1024:.1f}MB\n"
                 f"⚠️ កំណត់: {MAX_FILE_SIZE / 1024 / 1024:.0f}MB\n\n"
@@ -1361,10 +1436,7 @@ async def process_download_callback(callback: SimpleNamespace, state: FSMContext
         elif "wrong file identifier" in err_str:
             error_msg = "❌ ទម្រង់ឯកសារខុស។ សូមព្យាយាមម្តងទៀត。"
         else:
-            error_msg = (
-                f"❌ មិនអាចបញ្ជូនបានទេ។\n\n"
-                f"<code>{escape(str(e)[:200])}</code>"
-            )
+            error_msg = f"❌ មិនអាចបញ្ជូនបានទេ។\n\n<code>{escape(str(e)[:200])}</code>"
         await callback.message.answer(error_msg, parse_mode="HTML")
         await send_log(
             f"❌ Upload Error (Telegram)\n"
@@ -1374,7 +1446,7 @@ async def process_download_callback(callback: SimpleNamespace, state: FSMContext
         )
 
     except Exception as e:
-        logger.error(f"Upload failed: {e}", exc_info=True)
+        logger.error("Upload failed: %s", e, exc_info=True)
         await callback.message.answer(
             f"❌ មានបញ្ហា upload 🧠\n\n<code>{escape(str(e)[:200])}</code>",
             parse_mode="HTML",
@@ -1452,7 +1524,7 @@ async def cmd_broadcast(message: Message, command: CommandObject):
     BATCH = 25
 
     for i in range(0, total, BATCH):
-        batch = active_users[i:i + BATCH]
+        batch = active_users[i : i + BATCH]
         tasks = [
             message.bot.send_message(
                 chat_id=u.get("user_id"),
@@ -1467,17 +1539,20 @@ async def cmd_broadcast(message: Message, command: CommandObject):
             if isinstance(res, Exception):
                 failed += 1
                 err = str(res).lower()
-                if ("blocked by the user" in err
-                        or "bot was blocked" in err
-                        or "user is deactivated" in err):
+                if (
+                    "blocked by the user" in err
+                    or "bot was blocked" in err
+                    or "user is deactivated" in err
+                ):
                     blocked += 1
                 else:
-                    logger.warning(f"Broadcast send failed: {res}")
+                    logger.warning("Broadcast send failed: %s", res)
             else:
                 success += 1
 
         done = min(i + BATCH, total)
-        await safe_edit_text(progress_msg,
+        await safe_edit_text(
+            progress_msg,
             f"📢 <b>កំពុងផ្សាយ...</b>\n"
             f"✅ {success} | ❌ {failed} | {done}/{total}",
             parse_mode="HTML",
@@ -1535,7 +1610,7 @@ async def cmd_stats(message: Message):
         await message.answer(text, parse_mode="HTML")
 
     except Exception as e:
-        logger.error(f"Stats error: {e}")
+        logger.error("Stats error: %s", e)
         await message.answer(f"❌ Error: {escape(str(e))}", parse_mode="HTML")
 
 
@@ -1555,7 +1630,7 @@ async def handle_bot_blocked(event: ChatMemberUpdated):
     username = f"@{escape(user.username)}" if user.username else "(no username)"
 
     if new_status in ("kicked", "left") and old_status == "member":
-        logger.info(f"🚫 User blocked bot: {user_id}")
+        logger.info("🚫 User blocked bot: %s", user_id)
         await db.set_user_active(user_id, False)
         await send_log(
             f"🚫 <b>User បានចាកចេញ / Block Bot</b>\n\n"
@@ -1567,7 +1642,7 @@ async def handle_bot_blocked(event: ChatMemberUpdated):
         return
 
     if new_status == "member" and old_status in ("kicked", "left"):
-        logger.info(f"✅ User unblocked bot: {user_id}")
+        logger.info("✅ User unblocked bot: %s", user_id)
         await db.set_user_active(user_id, True)
         await send_log(
             f"✅ <b>User បានត្រឡប់មកវិញ / Unblock Bot</b>\n\n"

@@ -1,4 +1,5 @@
 import asyncio
+import io
 import logging
 import urllib.parse
 from io import BytesIO
@@ -6,13 +7,14 @@ from typing import Optional
 
 import aiohttp
 from google import genai
-from google.genai.errors import APIError, ServerError
 from google.genai import types
+from google.genai.errors import APIError, ServerError
 from PIL import Image
 
 from src.config import GEMINI_API_KEY
 
 logger = logging.getLogger(__name__)
+
 CODECOGS_LATEX_URL = "https://latex.codecogs.com/png.image"
 FALLBACK_MODELS = [
     "gemini-3.7-flash",
@@ -32,6 +34,7 @@ class HomeworkSolverError(RuntimeError):
             "❌ សេវា AI មិនអាចដោះស្រាយលំហាត់បាននៅពេលនេះទេ។ "
             "សូមព្យាយាមម្តងទៀតនៅពេលក្រោយ។"
         )
+
 
 SYSTEM_PROMPT = (
     "អ្នកជាគ្រូបង្រៀនខ្មែរដែលមានបទពិសោធន៍ សម្រាប់សិស្សវិទ្យាល័យកម្ពុជា ថ្នាក់ទី ១០ ដល់ ១២។ "
@@ -64,35 +67,27 @@ async def render_latex_to_image(latex_str: str) -> bytes | None:
         if not latex_code:
             return None
 
-        url = (
-            f"{CODECOGS_LATEX_URL}?\\dpi{{300}}\\bg{{18181b}}\\color{{white}} "
-            f"{urllib.parse.quote(latex_code)}"
-        )
-        timeout = aiohttp.ClientTimeout(total=30)
+        # បញ្ចូល styling ផ្ទៃខ្មៅ អក្សរស DPI 300 រួច encode ទាំងស្រុង
+        full_latex = f"\\dpi{{300}} \\bg{{18181b}} \\color{{white}} {latex_code}"
+        encoded_query = urllib.parse.quote(full_latex)
+        url = f"{CODECOGS_LATEX_URL}?{encoded_query}"
+
+        timeout = aiohttp.ClientTimeout(total=15)
         headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36"
             )
         }
-        async with aiohttp.ClientSession(
-            timeout=timeout,
-            headers=headers,
-        ) as session:
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
             async with session.get(url) as response:
                 if response.status != 200:
                     logger.warning("CodeCogs returned HTTP %s", response.status)
                     return None
                 image_bytes = await response.read()
-                if not image_bytes:
-                    logger.warning("CodeCogs returned an empty image")
-                    return None
-                return image_bytes
-    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-        logger.warning("CodeCogs LaTeX rendering failed: %s", e)
-        return None
+                return image_bytes if image_bytes else None
     except Exception as e:
-        logger.error("Unexpected CodeCogs rendering error: %s", e, exc_info=True)
+        logger.warning("CodeCogs LaTeX rendering failed: %s", e)
         return None
 
 
@@ -111,18 +106,19 @@ async def solve_homework(
     contents: list[object] = []
     if question.strip():
         contents.append(question.strip())
+
     if image_bytes:
         try:
             with Image.open(BytesIO(image_bytes)) as image:
                 image.load()
                 normalized_image = BytesIO()
                 image.convert("RGB").save(normalized_image, format="JPEG")
-            image_bytes = normalized_image.getvalue()
-            if not image_bytes:
+            processed_bytes = normalized_image.getvalue()
+            if not processed_bytes:
                 raise ValueError("Normalized image is empty")
             contents.append(
                 types.Part.from_bytes(
-                    data=image_bytes,
+                    data=processed_bytes,
                     mime_type="image/jpeg",
                 )
             )
@@ -132,6 +128,7 @@ async def solve_homework(
                 "Homework image could not be decoded",
                 "❌ មិនអាចអានរូបថតលំហាត់បានទេ។ សូមផ្ញើរូបភាពដែលច្បាស់ និងត្រឹមត្រូវ។",
             ) from e
+
     if not contents:
         raise ValueError("Homework input is empty")
 
@@ -152,6 +149,7 @@ async def solve_homework(
                 raw_answer = (response.text or "").strip()
                 if not raw_answer:
                     raise HomeworkSolverError("Gemini returned an empty response")
+
                 if "===LATEX_BLOCK===" in raw_answer:
                     latex_code, text_explanation = raw_answer.split(
                         "===LATEX_BLOCK===", 1
@@ -161,10 +159,12 @@ async def solve_homework(
                     if latex_code.startswith("```"):
                         latex_code = latex_code.split("\n", 1)[-1]
                         latex_code = latex_code.rsplit("```", 1)[0].strip()
-                    return await render_latex_to_image(latex_code), text_explanation
+                    rendered_img = await render_latex_to_image(latex_code)
+                    return rendered_img, text_explanation
+
                 return None, raw_answer
             except ServerError as e:
-                logger.exception("Model %s encountered an error: %s", model_name, e)
+                logger.exception("Model %s encountered a server error: %s", model_name, e)
                 status_code = getattr(e, "status_code", None) or 503
                 if status_code not in (429, 503, 404):
                     raise HomeworkSolverError(
@@ -177,9 +177,9 @@ async def solve_homework(
                     status_code,
                 )
                 if status_code == 503:
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(1.5)
             except APIError as e:
-                logger.exception("Model %s encountered an error: %s", model_name, e)
+                logger.exception("Model %s encountered an API error: %s", model_name, e)
                 status_code = getattr(e, "status_code", None)
                 if status_code not in (429, 503, 404):
                     raise HomeworkSolverError(
@@ -191,6 +191,7 @@ async def solve_homework(
                     model_name,
                     status_code,
                 )
+                await asyncio.sleep(1)
 
         if last_retry_status == 503:
             raise HomeworkSolverError(
@@ -203,9 +204,7 @@ async def solve_homework(
                 "Gemini request was rate limited",
                 "⚠️ សេវា AI កំពុងមានការស្នើសុំច្រើន។ សូមរង់ចាំបន្តិច រួចសាកល្បងម្ដងទៀត។",
             )
-        raise HomeworkSolverError(
-            "No configured Gemini model is available"
-        )
+        raise HomeworkSolverError("No configured Gemini model is available")
     except HomeworkSolverError:
         raise
     except Exception as e:
