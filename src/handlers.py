@@ -590,13 +590,16 @@ async def handle_homework_photo(message: Message, state: FSMContext):
     photo = message.photo[-1]
     try:
         file = await message.bot.get_file(photo.file_id)
-        image_buffer = BytesIO()
-        await message.bot.download_file(file.file_path, image_buffer)
+        file_io = BytesIO()
+        await message.bot.download_file(file.file_path, file_io)
+        image_bytes = file_io.getvalue()
+        if not image_bytes:
+            raise ValueError("Telegram returned an empty photo file")
         await send_homework_solution(
             message,
             state,
             question=message.caption or "សូមអាន និងដោះស្រាយលំហាត់ក្នុងរូបនេះ។",
-            image_bytes=image_buffer.getvalue(),
+            image_bytes=image_bytes,
             mime_type="image/jpeg",
         )
     except Exception as e:

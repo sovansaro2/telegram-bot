@@ -117,9 +117,12 @@ async def solve_homework(
                 image.load()
                 normalized_image = BytesIO()
                 image.convert("RGB").save(normalized_image, format="JPEG")
+            image_bytes = normalized_image.getvalue()
+            if not image_bytes:
+                raise ValueError("Normalized image is empty")
             contents.append(
                 types.Part.from_bytes(
-                    data=normalized_image.getvalue(),
+                    data=image_bytes,
                     mime_type="image/jpeg",
                 )
             )
@@ -136,11 +139,11 @@ async def solve_homework(
     last_retry_status = None
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
-        for model in FALLBACK_MODELS:
+        for model_name in FALLBACK_MODELS:
             try:
-                logger.info("Trying Gemini model: %s", model)
+                logger.info("Trying Gemini model: %s", model_name)
                 response = await client.aio.models.generate_content(
-                    model=model,
+                    model=model_name,
                     contents=contents,
                     config=types.GenerateContentConfig(
                         system_instruction=SYSTEM_PROMPT
@@ -161,6 +164,7 @@ async def solve_homework(
                     return await render_latex_to_image(latex_code), text_explanation
                 return None, raw_answer
             except ServerError as e:
+                logger.exception("Model %s encountered an error: %s", model_name, e)
                 status_code = getattr(e, "status_code", None) or 503
                 if status_code not in (429, 503, 404):
                     raise HomeworkSolverError(
@@ -169,12 +173,13 @@ async def solve_homework(
                 last_retry_status = status_code
                 logger.warning(
                     "Gemini model %s failed with server error %s; trying fallback",
-                    model,
+                    model_name,
                     status_code,
                 )
                 if status_code == 503:
                     await asyncio.sleep(1)
             except APIError as e:
+                logger.exception("Model %s encountered an error: %s", model_name, e)
                 status_code = getattr(e, "status_code", None)
                 if status_code not in (429, 503, 404):
                     raise HomeworkSolverError(
@@ -183,7 +188,7 @@ async def solve_homework(
                 last_retry_status = status_code
                 logger.warning(
                     "Gemini model %s failed with API error %s; trying fallback",
-                    model,
+                    model_name,
                     status_code,
                 )
 
