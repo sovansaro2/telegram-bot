@@ -1,6 +1,7 @@
 import logging
 from typing import Optional
 
+import aiohttp
 from google import genai
 from google.genai.errors import APIError, ServerError
 from google.genai import types
@@ -8,6 +9,7 @@ from google.genai import types
 from src.config import GEMINI_API_KEY, GEMINI_MODEL
 
 logger = logging.getLogger(__name__)
+QUICKCHART_LATEX_URL = "https://quickchart.io/latex"
 
 
 class HomeworkSolverError(RuntimeError):
@@ -34,8 +36,37 @@ SYSTEM_PROMPT = (
     "សម្រាប់ឫសការេ ប្រើ √ ដូចជា √(4x² + x + 2)។ សម្រាប់ប្រភាគ ប្រើ / ដូចជា 1/x។ "
     "សម្រាប់លីមីត ប្រើ → ដូចជា lim (x → +∞) ហើយប្រើ ∞ សម្រាប់អនន្ត។ សម្រាប់គុណ ប្រើ × និងសម្រាប់មិនស្មើ ប្រើ ≠។ "
     "សម្រាប់ស្វ័យគុណ ប្រើលេខលើ Unicode ដូចជា x² និង x³។ "
-    "បើសំណួរមិនច្បាស់ សូមបង្ហាញចំណុចដែលមិនច្បាស់នៅក្នុងជំហានដោះស្រាយ ហើយកុំប្រឌិតទិន្នន័យ។"
+    "បើសំណួរមិនច្បាស់ សូមបង្ហាញចំណុចដែលមិនច្បាស់នៅក្នុងជំហានដោះស្រាយ ហើយកុំប្រឌិតទិន្នន័យ។ "
+    "ត្រូវបែងចែកចម្លើយជាពីរផ្នែក ដោយប្រើបន្ទាត់ ===SEPARATOR=== តែមួយគត់។ "
+    "ផ្នែកទី១ មុនសញ្ញាបែងចែក ត្រូវមានតែប្លុករូបមន្តគណិតវិទ្យា LaTeX ពេញលេញ និងមានជំហានជាច្រើន "
+    "ដែលអាចយកទៅ Render ជារូបភាពបាន។ កុំដាក់អត្ថបទពន្យល់ក្នុងផ្នែកទី១។ "
+    "ផ្នែកទី២ ក្រោយសញ្ញាបែងចែក ត្រូវមានការពន្យល់ជាភាសាខ្មែរ ជាជំហានៗ ហើយត្រូវចាប់ផ្តើមដោយ "
+    "🎯 ចម្លើយ៖ [ចម្លើយចុងក្រោយ] និងបញ្ចប់ដោយ ✅ ចម្លើយចុងក្រោយ៖ [ចម្លើយចុងក្រោយ]។ "
+    "ការហាមប្រើ LaTeX និងការប្រើ Unicode math symbols អនុវត្តចំពោះផ្នែកទី២ប៉ុណ្ណោះ។"
 )
+
+
+async def render_latex_to_image(latex_str: str) -> bytes:
+    """Render a LaTeX formula block into a Telegram-ready PNG."""
+    formula = latex_str.strip()
+    if not formula:
+        raise ValueError("LaTeX formula is empty")
+
+    timeout = aiohttp.ClientTimeout(total=30)
+    params = {
+        "formula": formula,
+        "textColor": "white",
+        "backgroundColor": "18181b",
+        "density": "300",
+    }
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(QUICKCHART_LATEX_URL, params=params) as response:
+            if response.status != 200:
+                raise RuntimeError(f"QuickChart returned HTTP {response.status}")
+            image_bytes = await response.read()
+            if not image_bytes:
+                raise RuntimeError("QuickChart returned an empty image")
+            return image_bytes
 
 
 async def solve_homework(
