@@ -74,6 +74,7 @@ class PdfState(StatesGroup):
 
 class HomeworkState(StatesGroup):
     waiting_for_homework = State()
+    waiting_for_mode = State()
 
 
 # ─────────────────────────────────────────────
@@ -185,7 +186,7 @@ def get_main_menu_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    text="📚 ស្វ័យសិក្សា",
+                    text="📗 លំហាត់គណិត",
                     callback_data="btn_self_study",
                 ),
             ],
@@ -224,6 +225,50 @@ def tts_voice_keyboard() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(text="⬅ បោះបង់", callback_data="feat_back"),
             ],
+        ]
+    )
+
+
+def homework_mode_keyboard() -> InlineKeyboardMarkup:
+    """ក្តារចុចសម្រាប់ឱ្យសិស្សជ្រើសរើសទម្រង់ចម្លើយ"""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="⚡ ប្រមាណវិធី & ចម្លើយ",
+                    callback_data="hw_mode_quick",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📖 ប្រមាណវិធី & ពន្យល់",
+                    callback_data="hw_mode_detailed",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔙 បោះបង់",
+                    callback_data="btn_back_home",
+                ),
+            ],
+        ]
+    )
+
+
+def homework_done_keyboard() -> InlineKeyboardMarkup:
+    """ក្តារចុចបង្ហាញក្រោយពេលផ្ដល់ចម្លើយរួចរាល់"""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔄 ធ្វើលំហាត់បន្ត",
+                    callback_data="btn_ai_homework",
+                ),
+                InlineKeyboardButton(
+                    text="🔙 ត្រឡប់ក្រោយ",
+                    callback_data="btn_back_home",
+                ),
+            ]
         ]
     )
 
@@ -487,13 +532,13 @@ async def self_study_menu_callback(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await safe_edit_text(
         callback.message,
-        "📚 <b>ស្វ័យសិក្សា</b>\n\n"
+        "📗 <b>លំហាត់គណិត</b>\n\n"
         "សូមជ្រើសរើសមុខងារដែលអ្នកចង់ប្រើ៖",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(
-                    text="📝 AI ដោះស្រាយលំហាត់",
+                    text="📝 ធ្វើលំហាត់",
                     callback_data="btn_ai_homework",
                 )],
                 [InlineKeyboardButton(
@@ -509,13 +554,11 @@ async def self_study_menu_callback(callback: CallbackQuery, state: FSMContext):
 async def ai_homework_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.clear()
-    await state.update_data(current_action="awaiting_homework")
     await state.set_state(HomeworkState.waiting_for_homework)
     await safe_edit_text(
         callback.message,
         "📝 <b>AI ដោះស្រាយលំហាត់</b>\n\n"
-        "សូមផ្ញើសំណួរ ឬរូបថតលំហាត់មកខ្ញុំ។\n"
-        "ខ្ញុំនឹងពន្យល់ដំណោះស្រាយជាជំហានៗជាភាសាខ្មែរ។",
+        "សូមផ្ញើសំណួរ ឬរូបថតលំហាត់មកខ្ញុំ។",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(
@@ -543,78 +586,39 @@ async def back_home_callback(callback: CallbackQuery, state: FSMContext):
     )
 
 
-async def send_homework_solution(
-    message: Message,
-    state: FSMContext,
-    question: str = "",
-    image_bytes: bytes | None = None,
-    mime_type: str = "image/jpeg",
-) -> None:
-    data = await state.get_data()
-    if data.get("current_action") != "awaiting_homework":
-        return
-
-    progress_message = await message.answer(
-        "⏳ <b>កំពុងវិភាគលំហាត់...</b> សូមរង់ចាំបន្តិច។",
-        parse_mode="HTML",
-    )
-    try:
-        math_img, html_explanation = await solve_homework(
-            question=question,
-            image_bytes=image_bytes,
-            mime_type=mime_type,
-        )
-
-        # ផ្ញើរូបភាពរូបមន្តគណិត (ប្រសិនបើមាន)
-        if math_img:
-            await message.answer_photo(
-                photo=BufferedInputFile(math_img, filename="solution.png")
-            )
-
-        # ផ្ញើអត្ថបទពន្យល់ជាទម្រង់ HTML ដើម្បីចេញប្រអប់ Copy Code ស្អាត
-        try:
-            if len(html_explanation) <= 4000:
-                await message.answer(html_explanation, parse_mode="HTML")
-            else:
-                for i in range(0, len(html_explanation), 4000):
-                    await message.answer(
-                        html_explanation[i : i + 4000], parse_mode="HTML"
-                    )
-        except Exception:
-            # Fallback ផ្ញើជា Plain text បើការ parse HTML មានបញ្ហា
-            await message.answer(html_explanation)
-
-        # លុប progress message ក្រោយពេលផ្ញើសម្រេច
-        await safe_delete_message(
-            message.bot, message.chat.id, progress_message.message_id
-        )
-
-    except HomeworkSolverError as e:
-        await safe_edit_text(
-            progress_message,
-            e.user_message,
-            parse_mode="HTML",
-        )
-    except Exception as e:
-        logger.error("Homework solver error: %s", e, exc_info=True)
-        await safe_edit_text(
-            progress_message,
-            "❌ មិនអាចដោះស្រាយលំហាត់បានទេនៅពេលនេះ។ "
-            "សូមពិនិត្យសំណួរ ហើយព្យាយាមម្តងទៀត។",
-            parse_mode="HTML",
-        )
-    finally:
-        await state.clear()
-
+# ─────────────────────────────────────────────
+# Homework Solver Handlers (With Choice Menu & Action Buttons)
+# ─────────────────────────────────────────────
 
 @router.message(HomeworkState.waiting_for_homework, F.text)
 async def handle_homework_text(message: Message, state: FSMContext):
-    await send_homework_solution(message, state, question=message.text or "")
+    """ទទួលសំណួរជាអក្សរ រួចបង្ហាញផ្ទាំងឱ្យសិស្សជ្រើសរើសទម្រង់ចម្លើយ"""
+    text = (message.text or "").strip()
+    if not text:
+        return
+
+    await state.update_data(
+        homework_question=text,
+        homework_image=None,
+    )
+    await state.set_state(HomeworkState.waiting_for_mode)
+
+    await message.answer(
+        "📥 <b>ទទួលបានលំហាត់របស់អ្នកហើយ!</b>\n\n"
+        "សូមជ្រើសរើសទម្រង់ចម្លើយដែលអ្នកចង់បាន៖",
+        parse_mode="HTML",
+        reply_markup=homework_mode_keyboard(),
+    )
 
 
 @router.message(HomeworkState.waiting_for_homework, F.photo)
 async def handle_homework_photo(message: Message, state: FSMContext):
+    """ទទួលរូបថតលំហាត់ រួចបង្ហាញផ្ទាំងឱ្យសិស្សជ្រើសរើសទម្រង់ចម្លើយ"""
     photo = message.photo[-1]
+    prog_msg = await message.answer(
+        "⏳ <b>កំពុងផ្ទុករូបភាព...</b>",
+        parse_mode="HTML",
+    )
     try:
         file = await message.bot.get_file(photo.file_id)
         file_io = BytesIO()
@@ -622,19 +626,109 @@ async def handle_homework_photo(message: Message, state: FSMContext):
         image_bytes = file_io.getvalue()
         if not image_bytes:
             raise ValueError("Telegram returned an empty photo file")
-        await send_homework_solution(
-            message,
-            state,
-            question=message.caption or "សូមអាន និងដោះស្រាយលំហាត់ក្នុងរូបនេះ។",
-            image_bytes=image_bytes,
-            mime_type="image/jpeg",
+
+        await state.update_data(
+            homework_question=message.caption or "",
+            homework_image=image_bytes,
+        )
+        await state.set_state(HomeworkState.waiting_for_mode)
+
+        await safe_edit_text(
+            prog_msg,
+            "📥 <b>ទទួលបានរូបភាពលំហាត់ហើយ!</b>\n\n"
+            "សូមជ្រើសរើសទម្រង់ចម្លើយដែលអ្នកចង់បាន៖",
+            parse_mode="HTML",
+            reply_markup=homework_mode_keyboard(),
         )
     except Exception as e:
         logger.error("Homework image download error: %s", e, exc_info=True)
-        await message.answer(
+        await safe_edit_text(
+            prog_msg,
             "❌ មិនអាចអានរូបថតបានទេ។ សូមផ្ញើរូបភាពម្តងទៀត។",
             parse_mode="HTML",
         )
+        await state.clear()
+
+
+@router.callback_query(F.data.startswith("hw_mode_"), HomeworkState.waiting_for_mode)
+async def handle_homework_mode_choice(callback: CallbackQuery, state: FSMContext):
+    """ដំណើរការដោះស្រាយលំហាត់ផ្អែកលើ Mode ដែលសិស្សបានជ្រើសរើស"""
+    await callback.answer()
+    mode = "quick" if callback.data == "hw_mode_quick" else "detailed"
+    mode_label = "⚡ ប្រមាណវិធី & ចម្លើយ" if mode == "quick" else "📖 ប្រមាណវិធី & ពន្យល់"
+
+    data = await state.get_data()
+    question = data.get("homework_question", "")
+    image_bytes = data.get("homework_image")
+
+    progress_message = await safe_edit_text(
+        callback.message,
+        f"⏳ <b>កំពុងដោះស្រាយ ({mode_label})...</b>\n<i>សូមរង់ចាំបន្តិច...</i>",
+        parse_mode="HTML",
+    )
+
+    try:
+        math_img, html_explanation = await solve_homework(
+            question=question,
+            image_bytes=image_bytes,
+            mime_type="image/jpeg",
+            mode=mode,
+        )
+
+        # ផ្ញើរូបភាពរូបមន្ត (ប្រសិនបើមាន)
+        if math_img:
+            await callback.message.answer_photo(
+                photo=BufferedInputFile(math_img, filename="solution.png")
+            )
+
+        # ផ្ញើអត្ថបទដំណោះស្រាយ រួមជាមួយប៊ូតុង "ធ្វើលំហាត់បន្ត" និង "ត្រឡប់ក្រោយ"
+        try:
+            if len(html_explanation) <= 4000:
+                await callback.message.answer(
+                    html_explanation,
+                    parse_mode="HTML",
+                    reply_markup=homework_done_keyboard(),
+                )
+            else:
+                chunks = [
+                    html_explanation[i : i + 4000]
+                    for i in range(0, len(html_explanation), 4000)
+                ]
+                for idx, chunk in enumerate(chunks):
+                    kb = (
+                        homework_done_keyboard()
+                        if idx == len(chunks) - 1
+                        else None
+                    )
+                    await callback.message.answer(
+                        chunk, parse_mode="HTML", reply_markup=kb
+                    )
+        except Exception:
+            await callback.message.answer(
+                html_explanation,
+                reply_markup=homework_done_keyboard(),
+            )
+
+        await safe_delete_message(
+            callback.bot, callback.message.chat.id, progress_message.message_id
+        )
+
+    except HomeworkSolverError as e:
+        await safe_edit_text(
+            progress_message,
+            e.user_message,
+            parse_mode="HTML",
+            reply_markup=homework_done_keyboard(),
+        )
+    except Exception as e:
+        logger.error("Homework solver error: %s", e, exc_info=True)
+        await safe_edit_text(
+            progress_message,
+            "❌ មិនអាចដោះស្រាយលំហាត់បានទេនៅពេលនេះ។ សូមព្យាយាមម្តងទៀត។",
+            parse_mode="HTML",
+            reply_markup=homework_done_keyboard(),
+        )
+    finally:
         await state.clear()
 
 
@@ -1036,7 +1130,7 @@ async def handle_tts_voice_selection(callback: CallbackQuery, state: FSMContext)
     await safe_edit_text(
         callback.message,
         f"✅ បានជ្រើសរើសសំឡេង: <b>{voice_label}</b>\n\n"
-        "🗣️ សូមវាយ ឬ Copy អត្ថបទជា <b>ភាសាខ្មែរ ឬអង់គ្លេស</b> បញ្ចូលមកទីនេះ។\n\n"
+        "🗣️ សូមវាយ ឬ Copy អត្ថបទជា <b>ភាសាខ្មែរ ឬអង់គ្លេស</b> បញ្ចូលមកទីនេះ。\n\n"
         "<i>ចំណាំ៖ សូមបញ្ចូលអត្ថបទក្រោម 3000 តួអក្សរ។</i>",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(
